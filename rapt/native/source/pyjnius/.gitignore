@@ -1,0 +1,8 @@
+*.pyo
+*.pyc
+jnius/jnius.c
+jnius/jnius.so
+build
+.*.swp
+*.class
+.idea

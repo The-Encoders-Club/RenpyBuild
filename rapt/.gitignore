@@ -1,0 +1,16 @@
+android-ndk*
+android-sdk*
+apache-ant*
+dist
+dist.old
+.classpath
+.project
+
+*.pyc
+*.pyo
+bin/
+dl/
+doc/_build/
+local.properties
+renpy
+build_moonlight.sh
