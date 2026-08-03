@@ -55,7 +55,6 @@ styles.txt
 /dl
 renpy/vc_version.py
 .externalToolBuilders
-/rapt
 /evil
 /iaptest
 /pygame_sdl2
