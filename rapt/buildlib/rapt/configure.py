@@ -1,8 +1,9 @@
 import json
 import os
 import re
-import plat
+from . import plat
 
+__ = plat.__
 
 # Taken from https://docs.oracle.com/javase/tutorial/java/nutsandbolts/_keywords.html
 JAVA_KEYWORDS = """
@@ -19,6 +20,7 @@ const*    float    native    super    while
 true false null
 """.replace("*", "").split()
 
+
 class Configuration(object):
 
     def __init__(self, directory):
@@ -26,8 +28,8 @@ class Configuration(object):
         self.package = None
         self.name = None
         self.icon_name = None
-        self.version = None
-        self.numeric_version = None
+        self.version = "1.0"
+        self.numeric_version = 1
         self.orientation = "sensorLandscape"
         self.permissions = [ "VIBRATE" ]
         self.include_pil = False
@@ -37,43 +39,56 @@ class Configuration(object):
         self.expansion = False
         self.google_play_key = None
         self.google_play_salt = None
-        self.target_version = 14
         self.store = "none"
+        self.update_icons = True
+        self.update_always = True
+        self.heap_size = None
+        self.update_keystores = True
 
-        try:
-            with file(os.path.join(directory, ".android.json"), "r") as f:
-                d = json.load(f)
+        for fn in [ "android.json", ".android.json" ]:
 
-            self.__dict__.update(d)
-        except:
-            pass
+            try:
+                with open(os.path.join(directory, fn), "r") as f:
+                    d = json.load(f)
+
+                self.__dict__.update(d)
+                break
+            except:
+                pass
 
         if self.orientation == "landscape":
             self.orientation = "sensorLandscape"
 
-    def save(self, directory):
+    def save(self, base):
 
-        with file(os.path.join(directory, ".android.json"), "w") as f:
-            json.dump(self.__dict__, f)
+        with open(os.path.join(base, "android.json"), "w") as f:
+            json.dump(self.__dict__, f, indent=4, sort_keys=True)
 
-def set_version(config, value):
-    """
-    Sets the version, and tries to set the numeric versions based on the
-    version number.
-    """
 
-    config.version = value
+    def set_heap_size(self, newSize, gradle_dir):
+        """
+        Sets the Java Heap Size for Gradle in gradle.properties.
+        """
 
-    try:
-        v = 0
+        with open(gradle_dir, "r+") as g:
+            contents = g.read()
+            contents = contents.replace("org.gradle.jvmargs=-Xmx" + str(self.heap_size) + "g\n",
+                "org.gradle.jvmargs=-Xmx" + str(newSize) + "g\n")
+            g.seek(0)
+            g.write(contents)
 
-        for i in config.version.split('.'):
-            v *= 100
-            v += int(i)
+    def get_heap_size(self):
+        """
+        Gets the Java Heap Size from gradle.properties
+        """
 
-        config.numeric_version = str(v)
-    except:
-        pass
+        with open(plat.path("project/gradle.properties"), "r") as heap:
+            for line in heap.readlines():
+                if "org.gradle.jvmargs" in line:
+                    heapValue = line
+
+        heapValue = heapValue.replace('org.gradle.jvmargs=-Xmx', "").replace('g\n', "")
+        self.heap_size = heapValue
 
 def configure(interface, directory, default_name=None, default_version=None):
 
@@ -82,143 +97,83 @@ def configure(interface, directory, default_name=None, default_version=None):
     if config.name is None:
         config.name = default_name
 
-    config.name = interface.input("""What is the full name of your application? This name will appear in the list of installed applications.""", config.name)
+    config.name = interface.input(__("What is the full name of your application? This name will appear in the list of installed applications."), config.name)
 
     if config.icon_name is None:
         config.icon_name = config.name
 
-    config.icon_name = interface.input("What is the short name of your application? This name will be used in the launcher, and for application shortcuts.", config.icon_name)
+    config.icon_name = interface.input(__("What is the short name of your application? This name will be used in the launcher, and for application shortcuts."), config.icon_name)
 
-    config.package = interface.input("""\
-What is the name of the package?
+    config.package = interface.input(__("What is the name of the package?\n\nThis is usually of the form com.domain.program or com.domain.email.program. It may only contain ASCII letters and dots. It must contain at least one dot."), config.package)
 
-This is usually of the form com.domain.program or com.domain.email.program. It may only contain ASCII letters and dots. It must contain at least one dot.""", config.package)
-
-    config.package = config.package.strip()
+    config.package = config.package.strip().lower()
 
     if not config.package:
-        interface.fail("The package name may not be empty.")
+        interface.fail(__("The package name may not be empty."))
 
     if " " in config.package:
-        interface.fail("The package name may not contain spaces.")
+        interface.fail(__("The package name may not contain spaces."))
 
     if "." not in config.package:
-        interface.fail("The package name must contain at least one dot.")
+        interface.fail(__("The package name must contain at least one dot."))
 
     for part in config.package.split('.'):
         if not part:
-            interface.fail("The package name may not contain two dots in a row, or begin or end with a dot.")
+            interface.fail(__("The package name may not contain two dots in a row, or begin or end with a dot."))
 
         if not re.match(r"[a-zA-Z_]\w*$", part):
-            interface.fail("Each part of the package name must start with a letter, and contain only letters, numbers, and underscores.")
+            interface.fail(__("Each part of the package name must start with a letter, and contain only letters, numbers, and underscores."))
 
         if part in JAVA_KEYWORDS:
-            interface.fail("{} is a Java keyword, and can't be used as part of a package name.".format(part))
+            interface.fail(__("{} is a Java keyword, and can't be used as part of a package name.").format(part))
 
-    if config.version is None:
-        config.version = default_version
+    config.get_heap_size()
 
-    version = interface.input("""\
-What is the application's version?
+    heap_size = interface.input(__("How much RAM (in GB) do you want to allocate to Gradle?\nThis must be a positive integer number."), config.heap_size)
 
-This should be the human-readable version that you would present to a person. It must contain only numbers and dots.""", config.version)
+    if not re.match(r'^[\d]+$', heap_size):
+        interface.fail(__("The RAM size must contain only numbers and be positive."))
 
-    if not re.match(r'^[\d\.]+$', version):
-        interface.fail("The version number must contain only numbers and dots.")
+    config.set_heap_size(heap_size, plat.path("project/gradle.properties"))
 
-    set_version(config, version)
-
-    config.numeric_version = interface.input("""What is the version code?
-
-This must be a positive integer number, and the value should increase between versions.""", config.numeric_version)
-
-    if not re.match(r'^[\d]+$', config.numeric_version):
-        interface.fail("The numeric version must contain only numbers.")
-
-    config.orientation = interface.choice("How would you like your application to be displayed?", [
-            ("sensorLandscape", "In landscape orientation."),
-            ("portrait", "In portrait orientation."),
-            ("sensor", "In the user's preferred orientation."),
+    config.orientation = interface.choice(__("How would you like your application to be displayed?"), [
+        ("sensorLandscape", __("In landscape orientation.")),
+        ("portrait", __("In portrait orientation.")),
+        ("sensor", __("In the user's preferred orientation.")),
         ], config.orientation)
 
-    if plat.renpy:
-        config.store = interface.choice("Which app store would you like to support in-app purchasing through?", [
-            ("play", "Google Play."),
-            ("amazon", "Amazon App Store."),
-            ("all", "Both, in one app."),
-            ("none", "Neither."),
-            ], config.store)
+    config.store = interface.choice(__("Which app store would you like to support in-app purchasing through?"), [
+        ("play", __("Google Play.")),
+        ("amazon", __("Amazon App Store.")),
+        ("all", __("Both, in one app.")),
+        ("none", __("Neither.")),
+        ], config.store)
 
-    if config.store in [ "play", "none" ]:
-        config.expansion = interface.choice("Would you like to create an expansion APK?", [
-            (False, "No. Size limit of 100 MB on Google Play, but can be distributed through other stores and sideloaded."),
-            (True, "Yes. 2 GB size limit, but won't work outside of Google Play. (Read the documentation to get this to work.)")
-            ], config.expansion)
+    permissions = [ i for i in config.permissions if i not in [ "INTERNET" ] ]
+    permissions.append("INTERNET")
 
-    config.target_version = interface.choice("What version of Android would you like to target?", [
-        (8, "Android 2.2. The menu button will always be shown."),
-        (11, "Android 3.0. The menu button will be shown on phones, but not tablets."),
-        (14, "Android 4.0. The menu button will never be shown."),
-        ], config.target_version)
+    config.permissions = permissions
 
-    if not plat.renpy:
-
-        config.layout = interface.choice("How is your application laid out?", [
-            ("internal", "A single directory, that will be placed on device internal storage."),
-            ("external", "A single directory, that will be placed on device external storage."),
-            ("split", "Multiple directories that correspond to internal, external, and asset storage."),
-            ], config.layout)
-
-        config.source = interface.yesno_choice("Do you want to include the Python source code of your application in the archive? If you include it once, you'll need to include it always.", config.source)
-
-        permissions = " ".join(config.permissions)
-        permissions = interface.input("""\
-What permissions should your application have? Possible permissions include:
-
-INTERNET (network access), VIBRATE (vibration control).
-
-Please enter a space-separated list of permissions.""", permissions)
-        config.permissions = permissions.split()
-
-        config.include_sqlite = interface.yesno_choice("Do you want to include SQLite3 with your application?", config.include_sqlite)
-        config.include_pil = interface.yesno_choice("Do you want to include the Python Imaging Library (PIL) with your application?", config.include_pil)
-
-    if plat.renpy:
-
-        if not config.expansion:
-            internet = "INTERNET" in config.permissions
-            internet = interface.yesno_choice("Do you want to allow the app to access the Internet?", internet)
-        else:
-            internet = False # included in template.
-
-        permissions = [ i for i in config.permissions if i not in [ "INTERNET" ] ]
-
-        if internet:
-            permissions.append("INTERNET")
-
-        config.permissions = permissions
-
+    config.update_always = interface.choice(
+        __("Do you want to automatically update the Java source code?"), [
+            (True, __("Yes. This is the best choice for most projects.")),
+            (False, __("No. This may require manual updates when Ren'Py or the project configuration changes."))
+            ], config.update_always)
 
     config.save(directory)
+
 
 def set_config(iface, directory, var, value):
 
     config = Configuration(directory)
 
     if var == "version":
-        set_version(config, value)
+        config.version = version
     elif var == "permissions":
         config.permissions = value.split()
     elif hasattr(config, var):
         setattr(config, var, value)
     else:
-        iface.fail("Unknown configuration variable: {}".format(var))
+        iface.fail(__("Unknown configuration variable: {}").format(var))
 
     config.save(directory)
-
-
-
-
-
-
-

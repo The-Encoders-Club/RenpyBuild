@@ -1,33 +1,38 @@
 # This sets up various variables and commands based on the platform we're on.
 
+from __future__ import print_function
+
 ##############################################################################
 # These are set based on the platform we're on.
 windows = False
 macintosh = False
 linux = False
 
+import sys
 import os
 import platform
 import traceback
 import shutil
+import subprocess
 
-if "ANT_HOME" in os.environ:
-    del os.environ["ANT_HOME"]
 
-def set_win32_java_home():
+def translate(s):
+    """
+    This is intended to be replaced when this module is imported from Ren'Py
+    proper, to translate `s` itself.
+    """
 
-    if "JAVA_HOME" in os.environ:
-        return
+    return s
 
-    import _winreg
 
-    with _winreg.OpenKey(_winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\JavaSoft\Java Development Kit") as jdk: #@UndefinedVariable
-        current_version, _type = _winreg.QueryValueEx(jdk, "CurrentVersion") #@UndefinedVariable
+def __(s):
+    """
+    This is imported into the other modules. It's called to translate `s`,
+    which is
+    """
 
-        with _winreg.OpenKey(jdk, current_version) as cv: #@UndefinedVariable
-            java_home, _type = _winreg.QueryValueEx(cv, "JavaHome") #@UndefinedVariable
+    return translate(s)
 
-        os.environ["JAVA_HOME"] = java_home
 
 def maybe_java_home(s):
     """
@@ -36,74 +41,90 @@ def maybe_java_home(s):
     """
 
     if "JAVA_HOME" in os.environ:
-        return os.path.join(os.environ["JAVA_HOME"], "bin", s)
+        binary_file_path = os.path.join(os.environ["JAVA_HOME"], "bin", s)
+        if not os.path.exists(binary_file_path):
+            return s
+
+        return binary_file_path
     else:
         return s
+
 
 if platform.win32_ver()[0]:
     windows = True
 
-    try:
-        set_win32_java_home()
-    except:
-        traceback.print_exc()
+    adb = "platform-tools\\adb.exe"
+    sdkmanager = "cmdline-tools\\latest\\bin\\sdkmanager.bat"
 
-    android = "android-sdk\\tools\\android.bat"
-    ant = "apache-ant\\bin\\ant.bat"
-    adb = "android-sdk\\platform-tools\\adb.exe"
+    java = maybe_java_home("java.exe")
     javac = maybe_java_home("javac.exe")
     keytool = maybe_java_home("keytool.exe")
 
+    gradlew = "project/gradlew.bat"
+
 elif platform.mac_ver()[0]:
     macintosh = True
-    android = "android-sdk/tools/android"
-    ant = "apache-ant/bin/ant"
-    adb = "android-sdk/platform-tools/adb"
+
+    adb = "platform-tools/adb"
+    sdkmanager = "cmdline-tools/latest/bin/sdkmanager"
+
+    java = maybe_java_home("java")
     javac = maybe_java_home("javac")
     keytool = maybe_java_home("keytool")
 
-    os.environ.setdefault("JAVA_HOME", "/usr")
+    gradlew = "project/gradlew"
 
 else:
     linux = True
-    android = "android-sdk/tools/android"
-    ant = "apache-ant/bin/ant"
-    adb = "android-sdk/platform-tools/adb"
+
+    adb = "platform-tools/adb"
+    sdkmanager = "cmdline-tools/latest/bin/sdkmanager"
+
+    java = maybe_java_home("java")
     javac = maybe_java_home("javac")
     keytool = maybe_java_home("keytool")
 
-RAPT_PATH = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    gradlew = "project/gradlew"
 
-sdk_version = "r24.4.1"
-ant_version = "1.9.3"
-build_version = "23.0.1"
-target = "android-22"
+# The path to RAPT.
 
-def path(path, replace=True, relative=False):
+if sys.version_info.major >= 3:
+    RAPT_PATH = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+else:
+    RAPT_PATH = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__.decode(sys.getfilesystemencoding())))))
+
+
+def path(path, relative=False):
     """
     Turns a relative path into an absolute path relative to the RAPT
     directory.
-
-    `replace`
-        If true, replaces apache-ant and android-sdk with versioned paths.
     """
 
-    if replace:
-        path = path.replace("android-sdk", "android-sdk-" + sdk_version)
-        path = path.replace("apache-ant", "apache-ant-" + ant_version)
-
+    if not path:
+        return RAPT_PATH
 
     if not relative:
         path = os.path.join(RAPT_PATH, path)
 
     return path
 
-android = path(android)
-ant = path(ant)
-adb = path(adb)
+jdk_requirement = 21
+sdk_version = "11076708_latest"
+
+try:
+    with open(path("sdk.txt")) as f:
+        sdk = f.read().strip()
+except:
+    sdk = path("Sdk")
+
+adb = os.path.join(sdk, adb)
+sdkmanager = os.path.join(sdk, sdkmanager)
+
+gradlew = path(gradlew)
 
 # This gets set in the Ren'Py launcher if we're a Ren'Py build.
 renpy = False
+
 
 def rename(src, dst):
     """
@@ -115,5 +136,11 @@ def rename(src, dst):
     elif os.path.exists(dst):
         os.unlink(dst)
 
-    os.rename(src, dst)
+    if os.path.isdir(src):
+        shutil.copytree(src, dst)
+        shutil.rmtree(src)
+    else:
+        shutil.copy(src, dst)
+        os.unlink(src)
 
+target = 'android-36'
