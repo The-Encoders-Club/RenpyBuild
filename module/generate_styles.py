@@ -431,7 +431,10 @@ class CodeGen(object):
                 return
 
         with open(self.filename, "wb") as f:
-            f.write(text)
+            if isinstance(text, str) and str is not bytes:
+                f.write(text.encode("utf-8"))
+            else:
+                f.write(text)
 
     def write(self, s, *args, **kwargs):
         out = "    " * self.depth
