@@ -31,6 +31,12 @@ import subprocess
 # Change to the directory containing this file.
 os.chdir(os.path.abspath(os.path.dirname(sys.argv[0])))
 
+# Handle static generate command
+if (len(sys.argv) >= 2) and (sys.argv[1] == "generate"):
+    import make_static_renpy6
+    make_static_renpy6.generate()
+    sys.exit(0)
+
 # Create the gen directory if it doesn't exist.
 try:
     os.makedirs("gen")
