@@ -35,20 +35,6 @@ for fname in os.listdir(gen_dir):
     if os.path.isfile(src):
         shutil.copy2(src, os.path.join(gen_fallback, fname))
 
-prefixes = [
-    "",
-    "default_",
-    "hover_",
-    "idle_",
-    "insensitive_",
-    "selected_",
-    "selected_hover_",
-    "selected_idle_",
-    "selected_insensitive_",
-    "activate_",
-    "selected_activate_",
-]
-
 cython_cmd = os.environ.get("RENPY_CYTHON", "cython")
 
 modules = [
@@ -60,7 +46,8 @@ modules = [
     ("renpy.styledata.stylesets", "renpy/styledata/stylesets.pyx", []),
 ]
 
-for p in prefixes:
+# Use exact prefixes from generate_styles (excludes Ren'Py 7 default_ prefix)
+for p in generate_styles.prefixes:
     pyx_file = os.path.join(gen_dir, "style_{}functions.pyx".format(p))
     modules.append(("renpy.styledata.style_{}functions".format(p), pyx_file, []))
 

@@ -7,7 +7,6 @@ renpy.style gen/renpy.style.c
 renpy.styledata.styleclass gen/renpy.styledata.styleclass.c
 renpy.styledata.stylesets gen/renpy.styledata.stylesets.c
 renpy.styledata.style_functions gen/renpy.styledata.style_functions.c
-renpy.styledata.style_default_functions gen/renpy.styledata.style_default_functions.c
 renpy.styledata.style_hover_functions gen/renpy.styledata.style_hover_functions.c
 renpy.styledata.style_idle_functions gen/renpy.styledata.style_idle_functions.c
 renpy.styledata.style_insensitive_functions gen/renpy.styledata.style_insensitive_functions.c

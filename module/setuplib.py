@@ -28,7 +28,10 @@ import os
 import sys
 import re
 
-import distutils.core
+try:
+    import distutils.core
+except ImportError:
+    import setuptools as distutils
 
 # This flag determines if we are compiling for Android or not.
 android = "RENPY_ANDROID" in os.environ
