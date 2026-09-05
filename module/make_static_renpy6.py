@@ -99,10 +99,14 @@ def generate():
             sys.exit(1)
 
         print("Cythonizing:", mod_name)
+        sys.stdout.flush()
         cmd = [cython_cmd] + include_flags + [full_pyx, "-o", c_path]
         res = subprocess.call(cmd)
+        sys.stdout.flush()
+        sys.stderr.flush()
         if res != 0:
             print("ERROR running Cython on", mod_name)
+            sys.stdout.flush()
             sys.exit(res)
 
         with open(c_path, "r") as f:
