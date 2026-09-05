@@ -1,17 +1,39 @@
 #!/usr/bin/env python
-# generate_static_renpy6.py
+# make_static_renpy6.py
 # Generates Cython C sources for Ren'Py 6.99.12.4 and writes module/Setup for static linking.
 
 from __future__ import print_function
 import os
 import sys
 import re
+import shutil
 import subprocess
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
 
 sys.path.insert(0, BASE)
+
+gen = "gen-static"
+gen_dir = os.path.join(BASE, gen)
+if not os.path.exists(gen_dir):
+    os.makedirs(gen_dir)
+
+gen_fallback = os.path.join(BASE, "gen")
+if not os.path.exists(gen_fallback):
+    os.makedirs(gen_fallback)
+
+# 1. Run generate_styles to create styleconstants.pxi, stylesets.pxi, and style function pyx files
+import generate_styles
+generate_styles.module_gen = gen_dir
+print("Generating styles with generate_styles...")
+generate_styles.generate()
+
+# Copy generated headers and pyx files to gen_fallback as well
+for fname in os.listdir(gen_dir):
+    src = os.path.join(gen_dir, fname)
+    if os.path.isfile(src):
+        shutil.copy2(src, os.path.join(gen_fallback, fname))
 
 prefixes = [
     "",
@@ -27,11 +49,6 @@ prefixes = [
     "selected_activate_",
 ]
 
-gen = "gen-static"
-gen_dir = os.path.join(BASE, gen)
-if not os.path.exists(gen_dir):
-    os.makedirs(gen_dir)
-
 cython_cmd = os.environ.get("RENPY_CYTHON", "cython")
 
 modules = [
@@ -44,7 +61,8 @@ modules = [
 ]
 
 for p in prefixes:
-    modules.append(("renpy.styledata.style_{}functions".format(p), "module/gen/style_{}functions.pyx".format(p), []))
+    pyx_file = os.path.join(gen_dir, "style_{}functions.pyx".format(p))
+    modules.append(("renpy.styledata.style_{}functions".format(p), pyx_file, []))
 
 modules.extend([
     ("renpy.display.render", "renpy/display/render.pyx", []),
@@ -63,6 +81,22 @@ modules.extend([
 def generate():
     setup_lines = []
 
+    include_dirs = [
+        os.path.join(BASE, "include"),
+        gen_dir,
+        gen_fallback,
+        ROOT,
+        os.path.join(ROOT, "renpy"),
+        os.path.join(ROOT, "renpy", "text"),
+        os.path.join(ROOT, "renpy", "styledata"),
+        os.path.join(ROOT, "renpy", "display"),
+        os.path.join(ROOT, "renpy", "gl"),
+    ]
+
+    include_flags = []
+    for inc in include_dirs:
+        include_flags.extend(["-I", inc])
+
     for mod_name, pyx_rel, extra_sources in modules:
         split_name = mod_name.split(".")
         c_name = mod_name + ".c"
@@ -78,15 +112,7 @@ def generate():
             sys.exit(1)
 
         print("Cythonizing:", mod_name)
-        cmd = [
-            cython_cmd,
-            "-I", os.path.join(BASE, "include"),
-            "-I", gen_dir,
-            "-I", os.path.join(BASE, "gen"),
-            "-I", ROOT,
-            full_pyx,
-            "-o", c_path
-        ]
+        cmd = [cython_cmd] + include_flags + [full_pyx, "-o", c_path]
         res = subprocess.call(cmd)
         if res != 0:
             print("ERROR running Cython on", mod_name)

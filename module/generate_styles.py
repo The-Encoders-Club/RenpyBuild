@@ -21,7 +21,10 @@
 
 from __future__ import print_function, unicode_literals, division, absolute_import
 
-str = unicode  # @ReservedAssignment
+try:
+    str = unicode  # @ReservedAssignment
+except NameError:
+    pass
 
 import collections
 import os
