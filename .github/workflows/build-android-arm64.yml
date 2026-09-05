@@ -53,6 +53,14 @@ jobs:
           cd renpy-build
           ln -s ../renpy renpy
 
+      - name: Download Android NDK r25c
+        run: |
+          cd renpy-build
+          mkdir -p tars
+          echo "Downloading android-ndk-r25c-linux.zip..."
+          curl -L -o tars/android-ndk-r25c-linux.zip https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          ls -lh tars/android-ndk-r25c-linux.zip
+
       - name: Run Android Compilation (renpy-build)
         run: |
           cd renpy-build
