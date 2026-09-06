@@ -26,6 +26,11 @@ jobs:
           ref: fix-7
           path: renpy-build
 
+      - name: Free Disk Space on Runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h
+
       - name: Install System Build Dependencies
         run: |
           sudo apt-get update
@@ -43,7 +48,7 @@ jobs:
         run: |
           curl -s https://bootstrap.pypa.io/pip/2.7/get-pip.py -o get-pip.py
           sudo python2 get-pip.py
-          sudo python2 -m pip install "cython<3" jinja2 requests
+          sudo python2 -m pip install Cython==0.29.32 jinja2 requests
           python3 -m pip install jinja2 requests
 
       - name: Clone Submodules and Build Dependencies
