@@ -1,6 +1,6 @@
 # Automatically generated for Ren'Py 6.99.12.4
 # Deterministic mapping for librenpy.a / _inittab
-_renpy gen/_renpy.c IMG_savepng.c core.c subpixel.c
+_renpy gen/_renpy.c core.c subpixel.c
 _renpybidi gen/_renpybidi.c renpybidicore.c
 renpy.audio.renpysound gen/renpy.audio.renpysound.c renpysound_core.c ffmedia.c
 renpy.style gen/renpy.style.c

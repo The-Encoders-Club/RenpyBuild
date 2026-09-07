@@ -38,7 +38,7 @@ for fname in os.listdir(gen_dir):
 cython_cmd = os.environ.get("RENPY_CYTHON", "cython")
 
 modules = [
-    ("_renpy", "module/_renpy.pyx", ["IMG_savepng.c", "core.c", "subpixel.c"]),
+    ("_renpy", "module/_renpy.pyx", ["core.c", "subpixel.c"]),
     ("_renpybidi", "module/_renpybidi.pyx", ["renpybidicore.c"]),
     ("renpy.audio.renpysound", "renpy/audio/renpysound.pyx", ["renpysound_core.c", "ffmedia.c"]),
     ("renpy.style", "renpy/style.pyx", []),
