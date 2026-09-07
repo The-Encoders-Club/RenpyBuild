@@ -485,6 +485,22 @@ def split_renpy(directory):
 
         plat.rename(full_fn, os.path.join(assets, fn))
 
+    # Ensure private/lib/python2.7 exists for Android Python 2 runtime
+    private_lib = os.path.join(private, "lib")
+    private_py27 = os.path.join(private_lib, "python2.7")
+    if not os.path.exists(private_py27):
+        old_py = os.path.join(private_lib, "pythonlib2.7")
+        if os.path.exists(old_py):
+            os.rename(old_py, private_py27)
+        else:
+            sdk_lib = os.path.abspath(os.path.join(plat.path("."), "..", "lib"))
+            for cand in ["python2.7", "pythonlib2.7"]:
+                cand_path = os.path.join(sdk_lib, cand)
+                if os.path.isdir(cand_path):
+                    os.makedirs(private_lib, exist_ok=True)
+                    shutil.copytree(cand_path, private_py27)
+                    break
+
     return private, assets
 
 
