@@ -85,8 +85,9 @@ jobs:
 
       - name: Validate Binary ABI & Symbols
         run: |
-          echo "=== Verifying Generated Native Libraries ==="
-          ARM64_SO=$(find renpy-build -name "librenpython.so" | grep "arm64-v8a" | head -n 1)
+          echo "=== All Generated librenpython.so Files ==="
+          find /home/runner/work/RenpyBuild/RenpyBuild -name "librenpython.so" -exec ls -lh {} +
+          ARM64_SO=$(find /home/runner/work/RenpyBuild/RenpyBuild -name "librenpython.so" | grep -E "arm64-v8a|arm64_v8a" | head -n 1)
           if [ -n "$ARM64_SO" ]; then
             echo "Found ARM64 binary: $ARM64_SO"
             ls -lh "$ARM64_SO"
@@ -109,4 +110,6 @@ jobs:
         with:
           name: renpy6-android-runtime-${{ github.run_id }}
           path: |
-            renpy-build/**/jniLibs/*/*.so
+            **/jniLibs/*/*.so
+            **/symbols/*/*.so
+            renpy-build/tmp/build/renpython.android-*/*.so
