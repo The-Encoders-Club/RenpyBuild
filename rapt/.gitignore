@@ -30,3 +30,5 @@ project/
 __pycache__/
 *.orig
 *.class
+
+symbols/
