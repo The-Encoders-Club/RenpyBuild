@@ -70,6 +70,14 @@ jobs:
           curl -L -o tars/android-ndk-r25c-linux.zip https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
           ls -lh tars/android-ndk-r25c-linux.zip
 
+      - name: Patch renpy-build Toolchain for Android Standalone
+        run: |
+          cd renpy-build
+          # 1. Explicitly pass -DANDROID across all librenpy C compilation
+          sed -i 's/"-I{{ renpy }}\/module"/"-I{{ renpy }}\/module" -DANDROID/g' tasks/librenpy.py
+          # 2. Exclude desktop-only steamapi.pyo from Android Python stdlib packaging
+          sed -i 's/steamapi.pyo//g' tasks/pythonlib.py
+
       - name: Run Android Compilation (renpy-build)
         run: |
           cd renpy-build
