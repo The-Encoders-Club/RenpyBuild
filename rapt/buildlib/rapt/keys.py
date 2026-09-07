@@ -34,6 +34,12 @@ def default_keystore_path(base):
     """
     Returns the default keystore path for the given project.
     """
+    if isinstance(base, (list, tuple)) or base is None:
+        try:
+            import renpy.store as store
+            base = store.project.current.path
+        except Exception:
+            base = plat.path(".")
 
     return os.path.join(base, "android.keystore")
 
@@ -41,6 +47,12 @@ def bundle_keystore_path(base):
     """
     Returns the bundle keystore path for the given project.
     """
+    if isinstance(base, (list, tuple)) or base is None:
+        try:
+            import renpy.store as store
+            base = store.project.current.path
+        except Exception:
+            base = plat.path(".")
 
     return os.path.join(base, "bundle.keystore")
 

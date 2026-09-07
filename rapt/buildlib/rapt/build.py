@@ -577,7 +577,25 @@ def size_tree(dn):
     return rv
 
 
-def build(iface, directory, base, install=False, bundle=False, launch=False, finished=None, permissions=[], version=None):
+def build(iface, directory, base=None, install=False, bundle=False, launch=False, finished=None, permissions=[], version=None):
+
+    if isinstance(base, (list, tuple)):
+        commands = list(base)
+        if "install" in commands:
+            install = True
+        if "bundle" in commands:
+            bundle = True
+        try:
+            import renpy.store as store
+            base = store.project.current.path
+        except Exception:
+            base = directory
+    elif base is None:
+        try:
+            import renpy.store as store
+            base = store.project.current.path
+        except Exception:
+            base = directory
 
     if not os.path.isdir(directory):
         iface.fail(__("{} is not a directory.").format(directory))
