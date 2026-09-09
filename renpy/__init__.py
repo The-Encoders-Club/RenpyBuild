@@ -308,13 +308,18 @@ def update_path(package):
     name = package.__name__.split(".")
 
     import _renpy
-    libexec = os.path.dirname(_renpy.__file__)
-    package.__path__.append(os.path.join(libexec, *name))
+    if hasattr(_renpy, "__file__") and _renpy.__file__:
+        libexec = os.path.dirname(_renpy.__file__)
+        package.__path__.append(os.path.join(libexec, *name))
 
     # Also find encodings, to deal with the way py2exe lays things out.
-    import encodings
-    libexec = os.path.dirname(encodings.__path__[0])
-    package.__path__.append(os.path.join(libexec, *name))
+    try:
+        import encodings
+        if hasattr(encodings, "__path__") and encodings.__path__:
+            libexec = os.path.dirname(encodings.__path__[0])
+            package.__path__.append(os.path.join(libexec, *name))
+    except Exception:
+        pass
 
 
 def import_all():

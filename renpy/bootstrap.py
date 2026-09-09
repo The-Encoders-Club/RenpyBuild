@@ -20,6 +20,14 @@
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 from __future__ import print_function
+try:
+    import androidembed
+    def _android_log(msg):
+        androidembed.log(str(msg))
+except:
+    def _android_log(msg):
+        pass
+
 import os.path
 import sys
 import subprocess
@@ -92,6 +100,8 @@ class NullFile(io.IOBase):
 
 
 def null_files():
+    if "ANDROID_PRIVATE" in os.environ:
+        return
     try:
         if sys.stderr.fileno() < 0:
             sys.stderr = NullFile()
@@ -189,7 +199,9 @@ def bootstrap(renpy_base):
     else:
         basedir = renpy_base
 
+    _android_log('[PASO 1] basedir=' + repr(basedir) + ' exists=' + str(os.path.exists(basedir)))
     if not os.path.exists(basedir):
+        _android_log('[ERROR CRITICO] basedir no existe: ' + repr(basedir))
         sys.stderr.write("Base directory %r does not exist. Giving up.\n" % (basedir,))
         sys.exit(1)
 
@@ -231,10 +243,16 @@ def bootstrap(renpy_base):
     # windows ";" is a directory separator in PATH, so if it's in a parent
     # directory, we won't get the libraries in the PATH, and hence pygame
     # won't import.)
+    _android_log('[PASO 2] Intentando importar pygame_sdl2...')
     try:
         import pygame_sdl2
         pygame_sdl2.import_as_pygame()
-    except:
+        _android_log('[PASO 2 OK] pygame_sdl2 cargado exitosamente')
+    except Exception as _pe:
+        _android_log('[ERROR PASO 2] Fallo pygame_sdl2: ' + repr(_pe))
+        import traceback
+        for l in traceback.format_exc().split('\n'):
+            _android_log('PYGAME_ERR: ' + l)
         print("""\
 Could not import pygame_sdl2. Please ensure that this program has been built
 and unpacked properly. Also, make sure that the directories containing
@@ -252,9 +270,15 @@ You may be using a system install of python. Please run {0}.sh,
         renpy.display.presplash.start(basedir, gamedir)
 
     # Ditto for the Ren'Py module.
+    _android_log('[PASO 3] Intentando importar _renpy...')
     try:
         import _renpy; _renpy
-    except:
+        _android_log('[PASO 3 OK] _renpy cargado exitosamente')
+    except Exception as _re:
+        _android_log('[ERROR PASO 3] Fallo _renpy: ' + repr(_re))
+        import traceback
+        for l in traceback.format_exc().split('\n'):
+            _android_log('RENPY_ERR: ' + l)
         print("""\
 Could not import _renpy. Please ensure that this program has been built
 and unpacked properly.
@@ -266,10 +290,20 @@ You may be using a system install of python. Please run {0}.sh,
 
     # Load up all of Ren'Py, in the right order.
 
+    _android_log('[PASO 4] Ejecutando renpy.import_all()...')
     import renpy  # @Reimport
-    renpy.import_all()
+    try:
+        renpy.import_all()
+        _android_log('[PASO 4 OK] renpy.import_all() completo')
+    except Exception as _iae:
+        _android_log('[ERROR PASO 4] Fallo import_all: ' + repr(_iae))
+        import traceback
+        for l in traceback.format_exc().split('\n'):
+            _android_log('IMPORTALL_ERR: ' + l)
 
+    _android_log('[PASO 4.1] Inicializando loader.init_importer()...')
     renpy.loader.init_importer()
+    _android_log('[PASO 4.1 OK] loader listo')
 
     exit_status = None
 
@@ -292,7 +326,9 @@ You may be using a system install of python. Please run {0}.sh,
                 if not os.path.exists(renpy.config.logdir):
                     os.makedirs(renpy.config.logdir, 0o777)
 
+                _android_log('[PASO 5] Entrando a renpy.main.main()...')
                 renpy.main.main()
+                _android_log('[PASO 5 OK] renpy.main.main() retorno normalmente')
 
                 exit_status = 0
 
@@ -318,7 +354,14 @@ You may be using a system install of python. Please run {0}.sh,
             except renpy.game.ParseErrorException:
                 pass
 
+            except SystemExit as _se:
+                _android_log('[CAPTURA SYSTEM_EXIT] Codigo de salida: ' + repr(_se.code))
+                exit_status = _se.code if isinstance(_se.code, int) else 1
             except Exception as e:
+                _android_log('[CAPTURA EXCEPCION] ' + repr(e))
+                import traceback
+                for l in traceback.format_exc().split('\n'):
+                    _android_log('TRACE: ' + l)
                 renpy.error.report_exception(e)
                 pass
 
