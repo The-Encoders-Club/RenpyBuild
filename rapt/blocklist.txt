@@ -4,7 +4,7 @@
 **.bak
 **.rpy
 **.swp
-**.pyo
+**.pyc
 **.pyx
 **.pxd
 

@@ -485,21 +485,59 @@ def split_renpy(directory):
 
         plat.rename(full_fn, os.path.join(assets, fn))
 
-    # Ensure private/lib/python2.7 exists for Android Python 2 runtime
-    private_lib = os.path.join(private, "lib")
-    private_py27 = os.path.join(private_lib, "python2.7")
-    if not os.path.exists(private_py27):
-        old_py = os.path.join(private_lib, "pythonlib2.7")
-        if os.path.exists(old_py):
-            os.rename(old_py, private_py27)
-        else:
-            sdk_lib = os.path.abspath(os.path.join(plat.path("."), "..", "lib"))
-            for cand in ["python2.7", "pythonlib2.7"]:
-                cand_path = os.path.join(sdk_lib, cand)
-                if os.path.isdir(cand_path):
-                    os.makedirs(private_lib, exist_ok=True)
-                    shutil.copytree(cand_path, private_py27)
-                    break
+    # Ensure private/lib/python2.7 exists and contains the full Python 2 stdlib (.pyo)
+    def safe_makedirs(p):
+        if not os.path.exists(p):
+            try:
+                os.makedirs(p)
+            except OSError:
+                pass
+
+    private_lib = os.path.join(private, 'lib')
+    private_py27 = os.path.join(private_lib, 'python2.7')
+    safe_makedirs(private_py27)
+
+    old_py = os.path.join(private_lib, 'pythonlib2.7')
+    if os.path.exists(old_py):
+        for root, dirs, files in os.walk(old_py):
+            rel = os.path.relpath(root, old_py)
+            d_dir = private_py27 if rel == '.' else os.path.join(private_py27, rel)
+            safe_makedirs(d_dir)
+            for f in files:
+                s_file = os.path.join(root, f)
+                d_file = os.path.join(d_dir, f)
+                if not os.path.exists(d_file):
+                    shutil.copy2(s_file, d_file)
+        shutil.rmtree(old_py, ignore_errors=True)
+
+    sdk_cands = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'Renpy 6.99.12.4', 'lib', 'python2.7')),
+        os.path.abspath(os.path.join(plat.RAPT_PATH, '..', 'Renpy 6.99.12.4', 'lib', 'python2.7')),
+        'C:/Users/araan/Desktop/SDK/Renpy 6.99.12.4/lib/python2.7',
+        'C:/Users/araan/Desktop/SDK/Renpy 6.99.12.4/lib/pythonlib2.7',
+    ]
+    try:
+        import renpy.config
+        sdk_cands.insert(0, os.path.join(renpy.config.renpy_base, 'lib', 'python2.7'))
+    except Exception:
+        pass
+
+    found_stdlib = None
+    for cand in sdk_cands:
+        if os.path.isdir(cand) and os.path.exists(os.path.join(cand, 'os.pyo')):
+            found_stdlib = cand
+            break
+
+    if found_stdlib:
+        for root, dirs, files in os.walk(found_stdlib):
+            rel = os.path.relpath(root, found_stdlib)
+            d_dir = private_py27 if rel == '.' else os.path.join(private_py27, rel)
+            safe_makedirs(d_dir)
+            for f in files:
+                s_file = os.path.join(root, f)
+                d_file = os.path.join(d_dir, f)
+                if not os.path.exists(d_file):
+                    shutil.copy2(s_file, d_file)
 
     return private, assets
 
