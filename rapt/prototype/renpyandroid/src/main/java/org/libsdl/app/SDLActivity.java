@@ -1671,7 +1671,11 @@ class SDLMain implements Runnable {
         if (SDLActivity.mSingleton != null && !SDLActivity.mSingleton.isFinishing()) {
             // Let's finish the Activity
             SDLActivity.mSDLThread = null;
-            SDLActivity.mSingleton.finish();
+            if (Build.VERSION.SDK_INT >= 21) {
+                SDLActivity.mSingleton.finishAndRemoveTask();
+            } else {
+                SDLActivity.mSingleton.finish();
+            }
         }  // else: Activity is already being destroyed
 
     }

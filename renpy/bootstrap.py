@@ -199,9 +199,7 @@ def bootstrap(renpy_base):
     else:
         basedir = renpy_base
 
-    _android_log('[PASO 1] basedir=' + repr(basedir) + ' exists=' + str(os.path.exists(basedir)))
     if not os.path.exists(basedir):
-        _android_log('[ERROR CRITICO] basedir no existe: ' + repr(basedir))
         sys.stderr.write("Base directory %r does not exist. Giving up.\n" % (basedir,))
         sys.exit(1)
 
@@ -243,11 +241,9 @@ def bootstrap(renpy_base):
     # windows ";" is a directory separator in PATH, so if it's in a parent
     # directory, we won't get the libraries in the PATH, and hence pygame
     # won't import.)
-    _android_log('[PASO 2] Intentando importar pygame_sdl2...')
     try:
         import pygame_sdl2
         pygame_sdl2.import_as_pygame()
-        _android_log('[PASO 2 OK] pygame_sdl2 cargado exitosamente')
     except Exception as _pe:
         _android_log('[ERROR PASO 2] Fallo pygame_sdl2: ' + repr(_pe))
         import traceback
@@ -270,10 +266,8 @@ You may be using a system install of python. Please run {0}.sh,
         renpy.display.presplash.start(basedir, gamedir)
 
     # Ditto for the Ren'Py module.
-    _android_log('[PASO 3] Intentando importar _renpy...')
     try:
         import _renpy; _renpy
-        _android_log('[PASO 3 OK] _renpy cargado exitosamente')
     except Exception as _re:
         _android_log('[ERROR PASO 3] Fallo _renpy: ' + repr(_re))
         import traceback
@@ -290,20 +284,16 @@ You may be using a system install of python. Please run {0}.sh,
 
     # Load up all of Ren'Py, in the right order.
 
-    _android_log('[PASO 4] Ejecutando renpy.import_all()...')
     import renpy  # @Reimport
     try:
         renpy.import_all()
-        _android_log('[PASO 4 OK] renpy.import_all() completo')
     except Exception as _iae:
         _android_log('[ERROR PASO 4] Fallo import_all: ' + repr(_iae))
         import traceback
         for l in traceback.format_exc().split('\n'):
             _android_log('IMPORTALL_ERR: ' + l)
 
-    _android_log('[PASO 4.1] Inicializando loader.init_importer()...')
     renpy.loader.init_importer()
-    _android_log('[PASO 4.1 OK] loader listo')
 
     exit_status = None
 
@@ -326,9 +316,7 @@ You may be using a system install of python. Please run {0}.sh,
                 if not os.path.exists(renpy.config.logdir):
                     os.makedirs(renpy.config.logdir, 0o777)
 
-                _android_log('[PASO 5] Entrando a renpy.main.main()...')
                 renpy.main.main()
-                _android_log('[PASO 5 OK] renpy.main.main() retorno normalmente')
 
                 exit_status = 0
 
@@ -380,3 +368,18 @@ You may be using a system install of python. Please run {0}.sh,
         # Prevent subprocess from throwing errors while trying to run it's
         # __del__ method during shutdown.
         subprocess.Popen.__del__ = popen_del
+
+        if renpy.android:
+            try:
+                import android
+                android.activity.finishAndRemoveTask()
+            except Exception:
+                pass
+
+            # Avoid running Python shutdown, which can cause more harm than good. (#5280)
+            try:
+                from jnius import autoclass
+                System = autoclass("java.lang.System")
+                System.exit(0)
+            except Exception:
+                pass
