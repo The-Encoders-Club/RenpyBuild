@@ -17,7 +17,7 @@
 #endif
 #endif
 
-#if defined ANDROID
+#if defined ANDROID || defined __ANDROID__
 
 	#define RENPY_GLES_2
 

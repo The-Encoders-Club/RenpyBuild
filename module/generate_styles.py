@@ -21,7 +21,10 @@
 
 from __future__ import print_function, unicode_literals, division, absolute_import
 
-str = unicode  # @ReservedAssignment
+try:
+    str = unicode  # @ReservedAssignment
+except NameError:
+    pass
 
 import collections
 import os
@@ -428,7 +431,10 @@ class CodeGen(object):
                 return
 
         with open(self.filename, "wb") as f:
-            f.write(text)
+            if isinstance(text, str) and str is not bytes:
+                f.write(text.encode("utf-8"))
+            else:
+                f.write(text)
 
     def write(self, s, *args, **kwargs):
         out = "    " * self.depth

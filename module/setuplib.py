@@ -28,7 +28,13 @@ import os
 import sys
 import re
 
-import distutils.core
+try:
+    import distutils.core
+except ImportError:
+    try:
+        import setuptools as distutils
+    except ImportError:
+        distutils = None
 
 # This flag determines if we are compiling for Android or not.
 android = "RENPY_ANDROID" in os.environ
@@ -305,7 +311,7 @@ def cython(name, source=[], libs=[], compile_if=True, define_macros=[], pyx=None
                 "-o",
                 c_fn])
 
-        except subprocess.CalledProcessError, e:
+        except subprocess.CalledProcessError as e:
             print()
             print(str(e))
             print()
@@ -358,14 +364,14 @@ def copyfile(source, dest, replace=None, replace_with=None):
         if os.path.getmtime(sfn) <= os.path.getmtime(dfn):
             return
 
-    sf = file(sfn, "rb")
+    sf = open(sfn, "rb")
     data = sf.read()
     sf.close()
 
     if replace:
         data = data.replace(replace, replace_with)
 
-    df = file(dfn, "wb")
+    df = open(dfn, "wb")
     df.write("# This file was automatically generated from " + source + "\n")
     df.write("# Modifications will be automatically overwritten.\n\n")
     df.write(data)
