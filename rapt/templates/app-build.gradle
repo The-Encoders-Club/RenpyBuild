@@ -1,0 +1,73 @@
+plugins {
+    id "com.android.application"
+}
+
+{% if bundle %}
+def localPropertiesFile = rootProject.file("bundle.properties")
+{% else %}
+def localPropertiesFile = rootProject.file("local.properties")
+{% endif %}
+
+def localProperties = new Properties()
+localProperties.load(new FileInputStream(localPropertiesFile))
+
+android {
+    compileSdkVersion = "android-36"
+
+    namespace = "{{ config.package }}"
+
+    defaultConfig {
+        applicationId = "{{ config.package }}"
+        minSdkVersion = 21
+        targetSdkVersion = 36
+        versionCode = {{ config.numeric_version }}
+        versionName = "{{ config.version }}"
+    }
+
+    signingConfigs {
+        release {
+            storeFile = file(localProperties["key.store"])
+            storePassword = localProperties["key.store.password"]
+            keyAlias = localProperties["key.alias"]
+            keyPassword = localProperties["key.alias.password"]
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled = false
+            packaging {
+                jniLibs {
+                    useLegacyPackaging = true
+                    keepDebugSymbols = [ "**/*.so" ]
+                }
+            }
+        }
+
+        release {
+            signingConfig =signingConfigs.release
+            minifyEnabled = false
+            packaging {
+                jniLibs {
+                    useLegacyPackaging = true
+                    keepDebugSymbols = [ "**/*.so" ]
+                }
+            }
+        }
+    }
+
+{% if big_bundle %}
+    assetPacks = [ ":ff1", ":ff2", ":ff3", ":ff4" ]
+{% endif %}
+
+    androidResources {
+        noCompress = [ "ogv", "avi", "mpg", "webm", "mkv", "mp4", "mp3", "mp2", "ogg", "opus", "flac", "png", "jpg", "jpeg", "webp", "avif", "rpyc", "rpymc", "rpyb", ]
+    }
+}
+
+dependencies {
+    implementation project(":renpyandroid")
+{% if config.store != "none" %}
+    implementation project(":renpyiap")
+{% endif %}
+}

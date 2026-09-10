@@ -1,0 +1,24 @@
+plugins {
+    id "com.android.library"
+}
+
+android {
+    namespace = "org.renpy.renpyiap"
+
+    compileSdkVersion = "android-36"
+
+    defaultConfig {
+        minSdkVersion = 21
+        targetSdkVersion = 36
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+}
+
+dependencies {
+    implementation "com.google.android.play:review:2.0.2"
+    implementation "com.amazon.device:amazon-appstore-sdk:3.0.8"
+    implementation "com.android.billingclient:billing:8.0.0"
+    implementation project(":renpyandroid")
+}
