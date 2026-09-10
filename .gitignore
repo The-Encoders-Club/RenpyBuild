@@ -73,3 +73,17 @@ renpy/vc_version.py
 /*-linux*/
 /*-dists/
 doc-web
+
+rapt_backup_ant/
+rapt/Sdk/
+rapt/android-sdk/
+*.keystore
+*.zip
+*.jar
+CheckJDK.class
+
+rapt/project/
+
+__pycache__/
+*.orig
+*.class

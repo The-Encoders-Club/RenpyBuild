@@ -1,4 +1,23 @@
-#!/usr/bin/env python2.7
+#!/usr/bin/env python
+
+from __future__ import division, absolute_import, with_statement, print_function, unicode_literals
+try:
+    from renpy.compat import PY2, basestring, bchr, bord, chr, open, pystr, range, str, tobytes, unicode # *
+except ImportError:
+    import sys
+    PY2 = (sys.version_info[0] == 2)
+    basestring = basestring if PY2 else (str,)
+    pystr = str
+    unicode = unicode if PY2 else str
+    str = str
+    range = xrange if PY2 else range
+    chr = chr
+    bchr = chr if PY2 else (lambda i: bytes([i]))
+    bord = ord if PY2 else (lambda s: s[0])
+    def tobytes(s):
+        if isinstance(s, unicode if PY2 else str):
+            return s.encode('latin-1')
+        return bytes(s)
 
 import sys
 
@@ -7,10 +26,21 @@ import tarfile
 import os
 import shutil
 import time
-import zipfile
+import gzip
 import subprocess
+import hashlib
+import collections
+
+from . import plat
+from . import iconmaker
+from .properties import set_property, local_properties, bundle_properties
+from .keys import update_project_keys, get_local_key_properties
 
 import rapt.plat as plat
+import rapt.iconmaker as iconmaker
+import rapt.install_sdk as install_sdk
+
+__ = plat.__
 
 sys.path.append(os.path.join(plat.RAPT_PATH, "buildlib", "jinja2.egg"))
 
@@ -26,7 +56,7 @@ else:
 
 class PatternList(object):
     """
-    Used to load in the blacklist and whitelist patterns.
+    Used to load in the blocklist and keeplist patterns.
     """
 
     def __init__(self, *args):
@@ -98,11 +128,18 @@ class PatternList(object):
         return re.compile(regexp, re.I)
 
 
+def should_autoescape(fn):
+    """
+    Returnes true if the filename `fn` should be autoescaped.
+    """
+
+    return fn.endswith(".xml")
+
 # Used by render.
-environment = jinja2.Environment(loader=jinja2.FileSystemLoader(plat.path('templates')))
+environment = jinja2.Environment(loader=jinja2.FileSystemLoader(plat.path('')), autoescape=should_autoescape)
 
 
-def render(template, dest, **kwargs):
+def render(always, template, dest, **kwargs):
     """
     Using jinja2, render `template` to the filename `dest`, supplying the keyword
     arguments as template parameters.
@@ -110,10 +147,16 @@ def render(template, dest, **kwargs):
 
     dest = plat.path(dest)
 
+    if (not always) and os.path.exists(dest):
+        return
+
+    if not os.path.isdir(os.path.dirname(dest)):
+        os.makedirs(os.path.dirname(dest))
+
     template = environment.get_template(template)
     text = template.render(**kwargs)
 
-    f = file(dest, "wb")
+    f = open(dest, "wb")
     f.write(text.encode("utf-8"))
     f.close()
 
@@ -137,16 +180,15 @@ def make_tar(iface, fn, source_dirs):
     def include(fn):
         rv = True
 
-        if blacklist.match(fn):
+        if blocklist.match(fn):
             rv = False
 
-        if whitelist.match(fn):
+        if keeplist.match(fn):
             rv = True
 
         return rv
 
-    # zf = zipfile.ZipFile(fn, "w")
-    tf = tarfile.open(fn, "w:gz", format=tarfile.USTAR_FORMAT)
+    tf = tarfile.open(fn, "w:gz", format=tarfile.GNU_FORMAT)
 
     added = set()
 
@@ -169,12 +211,9 @@ def make_tar(iface, fn, source_dirs):
 
     for sd in source_dirs:
 
-        if PYTHON and not RENPY:
-            compile_dir(iface, sd)
-
         sd = os.path.abspath(sd)
 
-        for dir, dirs, files in os.walk(sd):  # @ReservedAssignment
+        for dir, dirs, files in os.walk(sd): # @ReservedAssignment
 
             for _fn in dirs:
                 fn = os.path.join(dir, _fn)
@@ -208,9 +247,9 @@ def make_tree(src, dest):
 
             ignore = False
 
-            if blacklist.match(relfn):
+            if blocklist.match(relfn):
                 ignore = True
-            if whitelist.match(relfn):
+            if keeplist.match(relfn):
                 ignore = False
 
             if ignore:
@@ -219,6 +258,94 @@ def make_tree(src, dest):
         return rv
 
     shutil.copytree(src, dest, ignore=ignore)
+
+
+def copy_into(src, dest):
+    """
+    Copies all files from `src` into `dest`, creating
+    directories that do not exist.
+    """
+
+    if not os.path.exists(src):
+        return
+
+    if os.path.isdir(src):
+        if not os.path.isdir(dest):
+            os.mkdir(dest, 0o777)
+
+        for i in os.listdir(src):
+            copy_into(
+                os.path.join(src, i),
+                os.path.join(dest, i),
+            )
+
+        return
+
+    shutil.copy2(src, dest)
+
+
+MAX_SIZE = 1000000000
+
+
+def make_bundle_tree(src):
+
+    src = plat.path(src)
+    sizes = collections.defaultdict(int)
+
+    targets = [
+        plat.path("project/ff1/src/main/assets"),
+        plat.path("project/ff2/src/main/assets"),
+        plat.path("project/ff3/src/main/assets"),
+        plat.path("project/ff4/src/main/assets"),
+        ]
+
+    # Write at least one file in each assets directory, to make sure that
+    # all exist.
+    for i in targets:
+
+            if os.path.isdir(i):
+                shutil.rmtree(i)
+
+            try:
+                os.makedirs(i, 0o777)
+            except:
+                pass
+
+            with open(os.path.join(i, "00_pack.txt"), "w") as f:
+                f.write("Shiro was here.\n")
+
+    for dirpath, _, filenames in os.walk(src):
+
+        for fn in filenames:
+
+            if fn[0] == ".":
+                continue
+
+            old = os.path.join(dirpath, fn)
+            size = os.path.getsize(old)
+
+            matchfn = os.path.relpath(old, src)
+
+            if blocklist.match(matchfn) and not keeplist.match(matchfn):
+                continue
+
+            for target in targets:
+                if sizes[target] + size <= MAX_SIZE:
+                    break
+            else:
+                raise Exception("Game too big for bundle, or single file > 500MB.")
+
+            sizes[target] += size
+
+            new = os.path.join(target, os.path.relpath(dirpath, src), fn)
+            newdir = os.path.join(target, os.path.relpath(dirpath, src))
+
+            try:
+                os.makedirs(newdir, 0o777)
+            except:
+                pass
+
+            plat.rename(old, new)
 
 
 def join_and_check(base, sub):
@@ -255,83 +382,17 @@ def edit_file(fn, pattern, line):
         f.write(''.join(lines))
 
 
-def zip_directory(zf, dn):
+def zip_directory(zf, prefix, dn):
     """
     Zips up the directory `dn`. `zf` is the file to place the
     contents of the directory into.
     """
 
-    base_dirname = plat.path(dn)
-
-    for dirname, dirs, files in os.walk(base_dirname):
+    for dirname, dirs, files in os.walk(dn):
         for fn in files:
             fn = os.path.join(dirname, fn)
-            archive_fn = os.path.join(dn, os.path.relpath(fn, base_dirname))
+            archive_fn = os.path.join(prefix, os.path.relpath(fn, dn))
             zf.write(fn, archive_fn)
-
-
-def copy_icon(directory, name, default):
-    """
-    Copys icon ending with `name` found in `directory` to
-    the appropriate res/drawables directory. If the file doesn't exist,
-    copies in default instead.
-    """
-
-    def copy(src, dst):
-        try:
-            os.makedirs(os.path.dirname(dst))
-        except:
-            pass
-
-        shutil.copy(src, dst)
-
-    res = plat.path("res")
-
-    # Clean out old files.
-    for i in os.listdir(res):
-        if not i.startswith("drawable"):
-            continue
-
-        fn = os.path.join(res, i, name)
-
-        if os.path.exists(fn):
-            os.unlink(fn)
-
-    found = False
-
-    # Copy files, if any are found.
-    for i in os.listdir(directory):
-
-        fullfn = os.path.join(directory, i)
-        fn = i.lower()
-
-        if not fn.startswith("android-"):
-            continue
-
-        if not fn.endswith("-" + name):
-            continue
-
-        prefix, rest = fn.split("-", 1)
-
-        if "-" in rest:
-            selector, _name = rest.rsplit("-", 1)
-
-            if selector not in [ "ldpi", "mdpi", "hdpi", "xhdpi", "xxhdpi", "tvdpi" ]:
-                continue
-
-            dest = os.path.join(res, "drawable-" + selector, name)
-        else:
-            dest = os.path.join(res, "drawable", rest)
-
-        copy(fullfn, dest)
-
-        found = True
-
-    if found:
-        return
-
-    # If no files are found, copy over the default.
-    copy(default, os.path.join(res, "drawable", name))
 
 
 def copy_presplash(directory, name, default):
@@ -349,7 +410,37 @@ def copy_presplash(directory, name, default):
         fn = default
         ext = os.path.splitext(fn)[1]
 
-    shutil.copy(fn, plat.path("assets/" + name + ext))
+    shutil.copy(fn, plat.path("project/app/src/main/assets/" + name + ext))
+
+
+def eliminate_pycache(directory):
+    """
+    Eliminates the __pycache__ directory, and moves the files in it up a level,
+    renaming them to remove the cache tag.
+    """
+
+    if PY2:
+        return
+
+    import pathlib
+    import sys
+
+    paths = list(pathlib.Path(directory).glob("**/__pycache__/*.pyc"))
+
+    for p in paths:
+        name = p.stem.partition(".")[0]
+
+        target = p.parent.parent / (name + ".pyc")
+
+        if target.exists():
+            target.unlink()
+
+        p.rename(target)
+
+    paths = list(pathlib.Path(directory).glob("**/__pycache__"))
+
+    for p in paths:
+        p.rmdir()
 
 
 def split_renpy(directory):
@@ -368,156 +459,283 @@ def split_renpy(directory):
     os.mkdir(assets)
     os.mkdir(os.path.join(assets, "renpy"))
 
-    os.rename(os.path.join(directory, "renpy", "common"), os.path.join(assets, "renpy", "common"))
+    plat.rename(os.path.join(directory, "renpy", "common"), os.path.join(assets, "renpy", "common"))
 
     for fn in filenames:
         full_fn = os.path.join(directory, fn)
 
         if fn.startswith("android-"):
             continue
-        if fn.startswith("ouya-"):
-            continue
 
         if fn.endswith(".py"):
-            os.rename(full_fn, os.path.join(private, "main.py"))
+            plat.rename(full_fn, os.path.join(private, "main.py"))
             continue
 
         if fn == "renpy":
-            os.rename(full_fn, os.path.join(private, fn))
+            plat.rename(full_fn, os.path.join(private, fn))
             continue
 
-        os.rename(full_fn, os.path.join(assets, fn))
+        if fn == "lib":
+            plat.rename(full_fn, os.path.join(private, fn))
+            continue
+
+        if fn == "public_key.pem":
+            plat.rename(full_fn, os.path.join(private, fn))
+            continue
+
+        plat.rename(full_fn, os.path.join(assets, fn))
+
+    # Ensure private/lib/python2.7 exists and contains the full Python 2 stdlib (.pyo)
+    def safe_makedirs(p):
+        if not os.path.exists(p):
+            try:
+                os.makedirs(p)
+            except OSError:
+                pass
+
+    private_lib = os.path.join(private, 'lib')
+    private_py27 = os.path.join(private_lib, 'python2.7')
+    safe_makedirs(private_py27)
+
+    old_py = os.path.join(private_lib, 'pythonlib2.7')
+    if os.path.exists(old_py):
+        for root, dirs, files in os.walk(old_py):
+            rel = os.path.relpath(root, old_py)
+            d_dir = private_py27 if rel == '.' else os.path.join(private_py27, rel)
+            safe_makedirs(d_dir)
+            for f in files:
+                s_file = os.path.join(root, f)
+                d_file = os.path.join(d_dir, f)
+                if not os.path.exists(d_file):
+                    shutil.copy2(s_file, d_file)
+        shutil.rmtree(old_py, ignore_errors=True)
+
+    sdk_cands = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'Renpy 6.99.12.4', 'lib', 'python2.7')),
+        os.path.abspath(os.path.join(plat.RAPT_PATH, '..', 'Renpy 6.99.12.4', 'lib', 'python2.7')),
+        'C:/Users/araan/Desktop/SDK/Renpy 6.99.12.4/lib/python2.7',
+        'C:/Users/araan/Desktop/SDK/Renpy 6.99.12.4/lib/pythonlib2.7',
+    ]
+    try:
+        import renpy.config
+        sdk_cands.insert(0, os.path.join(renpy.config.renpy_base, 'lib', 'python2.7'))
+    except Exception:
+        pass
+
+    found_stdlib = None
+    for cand in sdk_cands:
+        if os.path.isdir(cand) and os.path.exists(os.path.join(cand, 'os.pyo')):
+            found_stdlib = cand
+            break
+
+    if found_stdlib:
+        for root, dirs, files in os.walk(found_stdlib):
+            rel = os.path.relpath(root, found_stdlib)
+            d_dir = private_py27 if rel == '.' else os.path.join(private_py27, rel)
+            safe_makedirs(d_dir)
+            for f in files:
+                s_file = os.path.join(root, f)
+                d_file = os.path.join(d_dir, f)
+                if not os.path.exists(d_file):
+                    shutil.copy2(s_file, d_file)
 
     return private, assets
 
 
-def build(iface, directory, commands, launch=False, finished=None):
+GENERATED = [
+    (False, "templates/app-build.gradle", "project/app/build.gradle"),
+    (False, "templates/app-AndroidManifest.xml", "project/app/src/main/AndroidManifest.xml"),
+    (False, "templates/app-strings.xml", "project/app/src/main/res/values/strings.xml"),
+    (False, "templates/renpyandroid-AndroidManifest.xml", "project/renpyandroid/src/main/AndroidManifest.xml"),
+    (False, "templates/renpyandroid-strings.xml", "project/renpyandroid/src/main/res/values/strings.xml"),
+    (False, "templates/Constants.java", "project/renpyandroid/src/main/java/org/renpy/android/Constants.java"),
+    (False, "templates/settings.gradle", "project/settings.gradle"),
+]
 
-    # Are we doing a Ren'Py build?
+COPIED = [
+    "renpyandroid/src/main/jniLibs",
+]
 
-    global RENPY
-    RENPY = plat.renpy
+
+def copy_project(update_always=False):
+    """
+    This updates the project, if necessary.
+    """
+
+    def snarf(fn):
+        fn = plat.path(fn)
+
+        if os.path.exists(fn):
+            return open(fn, "r").read().strip()
+        else:
+            return None
+
+    project = plat.path("project")
+    prototype = plat.path("prototype")
+
+    update = False
+
+    if not os.path.exists(project):
+        update = True
+    elif update_always:
+        if snarf("project/build.txt") != snarf("prototype/build.txt"):
+            update = True
+
+    if not update:
+        return
+
+    lp = snarf("project/local.properties")
+    bp = snarf("project/bundle.properties")
+
+    if os.path.exists(project):
+        shutil.rmtree(project)
+
+    shutil.copytree(prototype, project)
+
+    if lp is not None:
+        with open(plat.path("project/local.properties"), "w") as f:
+            f.write(lp + "\n")
+
+    if bp is not None:
+        with open(plat.path("project/bundle.properties"), "w") as f:
+            f.write(bp + "\n")
+
+
+def copy_libs():
+    """
+    This copies updated libraries from the prototype to the project each
+    time a build occurs.
+    """
+
+    for i in COPIED:
+        project = plat.path("project/" + i)
+        prototype = plat.path("prototype/" + i)
+
+        if os.path.exists(project):
+            shutil.rmtree(project)
+
+        shutil.copytree(prototype, project)
+
+def size_tree(dn):
+    """
+    Returns the size of the tree `dn`, in bytes.
+    """
+
+    rv = 0
+
+    for dn, directories, filenames in os.walk(dn):
+        for fn in filenames:
+            fn = os.path.join(dn, fn)
+            rv += os.path.getsize(fn)
+
+    return rv
+
+
+def build(iface, directory, base=None, install=False, bundle=False, launch=False, finished=None, permissions=[], version=None):
+
+    if isinstance(base, (list, tuple)):
+        commands = list(base)
+        if "install" in commands:
+            install = True
+        if "bundle" in commands:
+            bundle = True
+        try:
+            import renpy.store as store
+            base = store.project.current.path
+        except Exception:
+            base = directory
+    elif base is None:
+        try:
+            import renpy.store as store
+            base = store.project.current.path
+        except Exception:
+            base = directory
 
     if not os.path.isdir(directory):
-        iface.fail("{} is not a directory.".format(directory))
+        iface.fail(__("{} is not a directory.").format(directory))
 
-    if RENPY and not os.path.isdir(os.path.join(directory, "game")):
-        iface.fail("{} does not contain a Ren'Py game.".format(directory))
+    if not os.path.isdir(os.path.join(directory, "renpy")):
+        iface.fail(__("{} does not contain a Ren'Py game.").format(directory))
+
+    if not os.path.isdir(os.path.join(directory, "game")):
+        iface.fail(__("{} does not contain a Ren'Py game.").format(directory))
+
+    install_sdk.check_java(iface)
 
     config = configure.Configuration(directory)
+
     if config.package is None:
-        iface.fail("Run configure before attempting to build the app.")
+        iface.fail(__("Run configure before attempting to build the app."))
 
-    if (config.store == "play" or config.store == "all") and (config.google_play_key is None):
-        iface.fail("Google Play support is enabled, but build.google_play_key is not set. Please set in your game.")
+    if version is not None:
 
-    global blacklist
-    global whitelist
+        split_version = [ i for i in version.split(".") if i.isdigit() ]
 
-    blacklist = PatternList("blacklist.txt")
-    whitelist = PatternList("whitelist.txt")
+        if not split_version:
+            split_version = [ "1", "0" ]
 
-    if RENPY:
-        manifest_extra = None
-        default_icon = plat.path("templates/renpy-icon.png")
-        default_presplash = plat.path("templates/renpy-presplash.jpg")
+        config.version = ".".join(split_version)
 
-        public_dir = None
-        private_dir, assets_dir = split_renpy(directory)
+    global blocklist
+    global keeplist
 
-    else:
-        manifest_extra = ""
-        default_icon = plat.path("templates/pygame-icon.png")
-        default_presplash = plat.path("templates/pygame-presplash.jpg")
+    blocklist = PatternList("blocklist.txt")
+    keeplist = PatternList("keeplist.txt")
 
-        if config.layout == "internal":
-            private_dir = directory
-            public_dir = None
-            assets_dir = None
-        elif config.layout == "external":
-            private_dir = None
-            public_dir = directory
-            assets_dir = None
-        elif config.layout == "split":
-            private_dir = join_and_check(directory, "internal")
-            public_dir = join_and_check(directory, "external")
-            assets_dir = join_and_check(directory, "assets")
+    default_presplash = plat.path("templates/renpy-presplash.jpg")
+    default_downloading = plat.path("templates/renpy-downloading.jpg")
 
-    versioned_name = config.name
-    versioned_name = re.sub(r'[^\w]', '', versioned_name)
-    versioned_name += "-" + config.version
+    eliminate_pycache(directory)
+
+    private_dir, assets_dir = split_renpy(directory)
+
+    # Pick the numeric version.
+    config.numeric_version = max(int(time.time()), int(config.numeric_version))
 
     # Annoying fixups.
     config.name = config.name.replace("'", "\\'")
     config.icon_name = config.icon_name.replace("'", "\\'")
 
-    if config.store not in [ "play", "none" ]:
-        config.expansion = False
+    config.permissions.extend(permissions)
 
-    # Figure out versions of the private and public data.
-    private_version = str(time.time())
+    iface.info(__("Updating project."))
 
-    if public_dir:
-        public_version = private_version
-    else:
-        public_version = None
+    copy_project(config.update_always)
 
-    # Render the various templates into control files.
-    render(
-        "AndroidManifest.tmpl.xml",
-        "AndroidManifest.xml",
-        config=config,
-        manifest_extra=manifest_extra,
-        )
+    copy_libs()
 
-    render(
-        "strings.xml",
-        "res/values/strings.xml",
-        public_version=public_version,
-        private_version=private_version,
-        config=config)
+    if config.update_keystores:
+        update_project_keys(base)
 
-    try:
-        os.unlink(plat.path("build.xml"))
-    except:
-        pass
+    iface.info(__("Creating assets directory."))
 
-    iface.info("Updating source code.")
+    assets = plat.path("project/app/src/main/assets")
 
-    edit_file("src/org/renpy/android/DownloaderActivity.java", r'import .*\.R;', 'import {}.R;'.format(config.package))
+    if os.path.isdir(assets):
+        shutil.rmtree(assets)
 
-    iface.info("Updating build files.")
-
-    # Update the project to a recent version.
-
-    if os.path.exists(plat.path("project.properties")):
-        os.unlink(plat.path("project.properties"))
-
-    iface.call([plat.android, "update", "project",
-                "-p", '.', '-t', plat.target, '-n', versioned_name,
-                "--library", plat.path("extras/google/market_apk_expansion/downloader_library", relative=True),
-                ])
-
-    iface.info("Creating assets directory.")
-
-    if os.path.isdir(plat.path("assets")):
-        shutil.rmtree(plat.path("assets"))
+    big_bundle = bundle and size_tree(assets_dir) > 50 * 1024 * 1024
 
     def make_assets():
 
-        if assets_dir is not None:
-            make_tree(assets_dir, plat.path("assets"))
-        else:
-            os.mkdir(plat.path("assets"))
+        if big_bundle:
 
-        # If we're Ren'Py, rename things.
-        if os.path.exists(plat.path("assets/renpy")):
+            os.mkdir(assets)
+            make_bundle_tree(assets_dir)
+
+        else:
+
+            make_tree(assets_dir, assets)
 
             # Ren'Py uses a lot of names that don't work as assets. Auto-rename
             # them.
-            for dirpath, dirnames, filenames in os.walk(plat.path("assets"), topdown=False):
+            for dirpath, dirnames, filenames in os.walk(assets, topdown=False):
 
-                for fn in filenames + dirnames:
+                # Sort names longest to shortest to ensure that adding the "x-"
+                # prefix will not overwrite an asset before it has been moved.
+                names = sorted(dirnames + filenames, key=len, reverse=True)
+
+                for fn in names:
                     if fn[0] == ".":
                         continue
 
@@ -526,148 +744,187 @@ def build(iface, directory, commands, launch=False, finished=None):
 
                     plat.rename(old, new)
 
+                    if new[-3:] != ".gz":
+                        continue
+
+                    # AAPT unavoidably gunzips files with a .gz extension.
+                    # To prevent this we temporarily double gzip such files,
+                    # leaving AAPT to unpack them back into the original
+                    # location. /o\
+
+                    old, new = new, new + ".gz"
+
+                    with open(old, "rb") as src, gzip.open(new, "wb") as out:
+                        shutil.copyfileobj(src, out)
+
+                    os.unlink(old)
+
     iface.background(make_assets)
 
-    if config.expansion:
-        iface.info("Creating expansion file.")
-        expansion_file = "main.{}.{}.obb".format(config.numeric_version, config.package)
+    # Copy assets out of the prototype, and into the project.
+    copy_into(
+        plat.path("prototype/app/src/main/assets"),
+        assets)
 
-        def make_expansion():
+    if not os.path.exists(plat.path("bin")):
+        os.mkdir(plat.path("bin"), 0o777)
 
-            zf = zipfile.ZipFile(plat.path(expansion_file), "w", zipfile.ZIP_STORED)
-            zip_directory(zf, "assets")
-            zf.close()
+    iface.info(__("Packaging internal data."))
 
-            # Delete and re-make the assets directory.
-            shutil.rmtree(plat.path("assets"))
-            os.mkdir(plat.path("assets"))
-
-        iface.background(make_expansion)
-
-        # Write the file size into DownloaderActivity.
-        file_size = os.path.getsize(plat.path(expansion_file))
-
-    else:
-        expansion_file = None
-        file_size = 0
-
-    # Write out constants.java.
-    if not config.google_play_key:
-        config.google_play_key = "NOT_SET"
-
-    if not config.google_play_salt:
-        config.google_play_salt = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
-
-    render(
-        "Constants.java",
-        "src/org/renpy/android/Constants.java",
-        config=config,
-        file_size=file_size)
-
-    iface.info("Packaging internal data.")
-
-    private_dirs = [ 'private' ]
+    private_dirs = [ 'project/renpyandroid/src/main/private' ]
 
     if private_dir is not None:
         private_dirs.append(private_dir)
 
-    if os.path.exists(plat.path("engine-private")):
-        private_dirs.append(plat.path("engine-private"))
+    # Really, a tar file with the private data in it.
+    private_mp3 = os.path.join(assets, "private.mp3")
 
-    def pack():
-        make_tar(iface, plat.path("assets/private.mp3"), private_dirs)
+    make_tar(iface, private_mp3, private_dirs)
 
-    iface.background(pack)
+    with open(private_mp3, "rb") as f:
+        private_version = hashlib.md5(f.read()).hexdigest()
 
-    if public_dir is not None:
-        iface.info("Packaging external data.")
-        make_tar(iface, plat.path("assets/public.mp3"), [ public_dir ])
+    for always, template, i in GENERATED:
 
-    # Copy over the icon files.
-    copy_icon(directory, "icon.png", default_icon)
+        render(
+            always or config.update_always,
+            template,
+            i,
+            private_version=private_version,
+            config=config,
+            bundle=bundle,
+            big_bundle=big_bundle,
+            sdkpath=plat.path("Sdk"),
+            )
+
+    if config.update_icons:
+        iconmaker.IconMaker(directory, config)
 
     # Copy the presplash files.
     copy_presplash(directory, "android-presplash", default_presplash)
+    copy_presplash(directory, "android-downloading", default_downloading)
 
-    # Copy over the OUYA icon.
-    ouya_icon = join_and_check(directory, "ouya-icon.png") or join_and_check(directory, "ouya_icon.png")
+    # Update the sdk path in the properties files.
+    set_property(local_properties, "sdk.dir", plat.sdk.replace("\\", "/"), replace=True)
+    set_property(bundle_properties, "sdk.dir", plat.sdk.replace("\\", "/"), replace=True)
 
-    if ouya_icon:
-        if not os.path.exists(plat.path("res/drawable-xhdpi")):
-            os.mkdir(plat.path("res/drawable-xhdpi"))
+    # Find and clean the apkdirs.
 
-        shutil.copy(ouya_icon, plat.path("res/drawable-xhdpi/ouya_icon.png"))
+    apkdirs = [ ]
+
+    if not bundle:
+        apkdirs.append(plat.path("project/app/build/outputs/apk/release"))
+    else:
+        apkdirs.append(plat.path("project/app/build/outputs/bundle/release"))
+
+    for i in apkdirs:
+        if os.path.exists(i):
+            shutil.rmtree(i)
 
     # Build.
-    iface.info("I'm using Ant to build the package.")
+    iface.info(__("I'm using Gradle to build the package."))
 
+    # This is a list of generated files that need to be copied over to the
+    # dists folder.
     files = [ ]
+
+    if bundle:
+        command = "bundleRelease"
+    elif install:
+        command = "installRelease"
+    else:
+        command = "assembleRelease"
 
     try:
 
-        # Clean is required, so we don't use old code. (Not true anymore?)
-        # iface.call([plat.ant, "clean" ] +  commands, cancel=True)
-        iface.call([ plat.ant ] +  commands, cancel=True)
-
-        files.append(plat.path("bin/" + versioned_name + "-release.apk"))
-
-        if (expansion_file is not None) and ("install" in commands):
-            iface.info("Uploading expansion file.")
-
-            dest = "/mnt/sdcard/{}".format(expansion_file)
-
-            iface.call([ plat.adb, "push", plat.path(expansion_file), dest ], cancel=True)
-
-        if expansion_file is not None:
-            plat.rename(plat.path(expansion_file), plat.path("bin/" + expansion_file))
-
-            files.append(plat.path("bin/" + expansion_file))
+        iface.call([ plat.gradlew, "-p", plat.path("project"), command ], cancel=True)
 
     except subprocess.CalledProcessError:
-        iface.fail("The build seems to have failed.")
+
+        iface.fail(__("The build seems to have failed."))
+
+    # Copy everything to bin.
+
+    for i in apkdirs:
+        for j in os.listdir(i):
+
+            for k in [ ".apk", ".aab" ]:
+                if j.endswith(k):
+                    break
+            else:
+                continue
+
+            sfn = os.path.join(i, j)
+
+            dfn = "bin/{}-{}-{}-{}".format(
+                config.package,
+                config.version,
+                config.numeric_version,
+                j[4:])
+
+            dfn = plat.path(dfn)
+
+            shutil.copy(sfn, dfn)
+            files.append(dfn)
+
+    # Install the bundle.
+
+    if bundle and install:
+
+        iface.info(__("I'm installing the bundle."))
+
+        try:
+
+            iface.call([
+                plat.java,
+                "-jar",
+                plat.path("bundletool.jar"),
+                "build-apks",
+                "--bundle=" + plat.path("project/app/build/outputs/bundle/release/app-release.aab"),
+                "--output=" + plat.path("project/app/build/outputs/bundle/release/app-release.apks"),
+                "--local-testing",
+            ] + get_local_key_properties())
+
+            iface.call([
+                plat.java,
+                "-jar",
+                plat.path("bundletool.jar"),
+                "install-apks",
+                "--apks=" + plat.path("project/app/build/outputs/bundle/release/app-release.apks"),
+                "--adb=" + plat.adb,
+            ])
+
+        except subprocess.CalledProcessError:
+
+            iface.fail(__("Installing the bundle appears to have failed."))
+
+# Launch.
 
     if launch:
-        iface.info("Launching app.")
+        iface.info(__("Launching app."))
 
-        if expansion_file:
-            launch_activity = "DownloaderActivity"
-        else:
-            launch_activity = "PythonSDLActivity"
+        launch_activity = "PythonSDLActivity"
 
-        iface.call([
-            plat.adb, "shell",
-            "am", "start",
-            "-W",
-            "-a", "android.intent.action.MAIN",
-            "{}/org.renpy.android.{}".format(config.package, launch_activity),
-            ], cancel=True)
+        try:
+
+            iface.call([
+                plat.adb, "shell",
+                "am", "start",
+                "-W",
+                "-a", "android.intent.action.MAIN",
+                "{}/org.renpy.android.{}".format(config.package, launch_activity),
+                ], cancel=True)
+
+        except subprocess.CalledProcessError:
+
+            iface.fail(__("Launching the app appears to have failed."))
 
     if finished is not None:
         finished(files)
 
-    iface.final_success("The build seems to have succeeded.")
-
-
-def connect(interface, address):
-    """
-    Causes ADB to connect to a remote address, which should be a string of
-    the form "hostname:port".
-    """
-
-    interface.info("Connecting to remote ADB.")
-    interface.call([ plat.adb, "disconnect" ], cancel=True)
-    interface.call([ plat.adb, "connect", address ], cancel=True)
-    interface.final_success("Connected to remote ADB.")
-
-
-def disconnect(interface):
-    """
-    Causes ADB to disconnect from a remote address.
-    """
-
-    interface.info("Disconnecting from remote ADB.")
-    interface.call([ plat.adb, "disconnect" ], cancel=True)
-    interface.final_success("Disconnected from remote ADB.")
+    iface.final_success(
+        __("The build seems to have succeeded.")
+        )
 
 
 def distclean(interface):
@@ -678,14 +935,11 @@ def distclean(interface):
     if os.path.exists(plat.path("build_renpy.sh")):
         raise Exception("Can't clean android directory!")
 
-    def rmdir(name, make):
+    def rmdir(name):
         path = plat.path(name)
 
         if os.path.isdir(path):
             shutil.rmtree(path)
-
-        if make:
-            os.mkdir(path)
 
     def rm(name):
         path = plat.path(name)
@@ -693,20 +947,11 @@ def distclean(interface):
         if os.path.exists(path):
             os.unlink(path)
 
-    rm("android.keystore")
-    rm("AndroidManifest.xml")
-    rmdir("assets", True)
-    rmdir("bin", True)
-    rm("default.properties")
-    rm("build.xml")
-    rmdir("gen", False)
-    rm("local.properties")
-    rm("proguard-project.txt")
-    rm("project.properties")
+    rm("buildlib/CheckJDK8.class")
+    rmdir("project")
+    rmdir("bin")
 
-    rmdir("android-sdk", False)
-    rmdir("apache-ant", False)
-
-    for i in os.listdir(plat.path('.')):
-        if i.endswith(".tgz") or i.endswith(".tar.gz") or i.endswith(".zip"):
-            os.unlink(plat.path(i, replace=False))
+    try:
+        rmdir("Sdk")
+    except:
+        rm("Sdk")
