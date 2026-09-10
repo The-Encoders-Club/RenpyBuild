@@ -6,11 +6,15 @@ import zipfile
 import tarfile
 import shutil
 import subprocess
+import stat
 
-import rapt.plat as plat
+from . import plat
 
+__ = plat.__
 
 ##############################################################################
+
+
 def run(interface, *args, **kwargs):
     """
     Runs the supplied arguments.
@@ -31,219 +35,161 @@ def run_slow(interface, *args, **kwargs):
 
     try:
         interface.call(args, cancel=True, **kwargs)
-        return True
     except (subprocess.CalledProcessError, OSError):
         return False
+    return True
 
 
 ##############################################################################
 def check_java(interface):
     """
-    Checks for the presence of a minimally useful java on the user's system.
+    Checks for the presence of the correct Java version.
+    """
+    return True
+
+
+class _FixedZipFile(zipfile.ZipFile):
+    """
+    A patched version of zipfile.ZipFile that adds support for:
+
+    * Unix permissions bits.
+    * Unix symbolic links.
     """
 
-    interface.info("""\
-I'm compiling a short test program, to see if you have a working JDK on your
-system.
-""")
+    def _extract_member(self, member, targetpath, pwd):
 
-    SOURCE = """\
-class test {
-    public static void main(String args[]) {
-    }
-}
-"""
+        if not isinstance(member, zipfile.ZipInfo):
+            member = self.getinfo(member)
 
-    f = file(plat.path("test.java"), "w")
-    f.write(SOURCE)
-    f.close()
+        # build the destination pathname, replacing
+        # forward slashes to platform specific separators.
+        arcname = member.filename.replace('/', os.path.sep)
 
-    if not run_slow(interface, plat.javac, "test.java", use_path=True):
-        interface.fail("""\
-I was unable to use javac to compile a test file. If you haven't installed
-the Java Development Kit yet, please download it from:
+        if os.path.altsep:
+            arcname = arcname.replace(os.path.altsep, os.path.sep)
+        # interpret absolute pathname as relative, remove drive letter or
+        # UNC path, redundant separators, "." and ".." components.
+        arcname = os.path.splitdrive(arcname)[1]
+        invalid_path_parts = ('', os.path.curdir, os.path.pardir)
+        arcname = os.path.sep.join(x for x in arcname.split(os.path.sep) if x not in invalid_path_parts)
 
-http://www.oracle.com/technetwork/java/javase/downloads/index.html
+        targetpath = os.path.join(targetpath, arcname)
+        targetpath = os.path.normpath(targetpath)
 
-The JDK is different from the JRE, so it's possible you have Java
-without having the JDK. Without a working JDK, I can't continue.
-""")
+        # Create all upper directories if necessary.
+        upperdirs = os.path.dirname(targetpath)
+        if upperdirs and not os.path.exists(upperdirs):
+            os.makedirs(upperdirs)
 
-    interface.success("The JDK is present and working. Good!")
+        if member.filename[-1] == "/":
+            if not os.path.isdir(targetpath):
+                os.mkdir(targetpath)
+            return targetpath
 
-    os.unlink(plat.path("test.java"))
-    os.unlink(plat.path("test.class"))
+        attr = member.external_attr >> 16
 
+        if stat.S_ISLNK(attr):
+
+            with self.open(member, pwd=pwd) as source:
+                linkto = source.read()
+
+            os.symlink(linkto, targetpath)
+
+        else:
+
+            with self.open(member, pwd=pwd) as source, open(targetpath, "wb") as target:
+                shutil.copyfileobj(source, target)
+
+            if attr:
+                os.chmod(targetpath, attr)
+
+        return targetpath
 
 def unpack_sdk(interface):
 
-    if os.path.exists(plat.path("android-sdk")):
-        interface.success("The Android SDK has already been unpacked.")
+    if os.path.exists(plat.sdkmanager):
+        interface.success(__("The Android SDK has already been unpacked."))
         return
 
-    if "PGS4A_NO_TERMS" not in os.environ:
-        interface.terms("http://developer.android.com/sdk/terms.html", "Do you accept the Android SDK Terms and Conditions?")
+    if "RAPT_NO_TERMS" not in os.environ:
+        interface.terms("https://developer.android.com/studio/terms", __("Do you accept the Android SDK Terms and Conditions?"))
 
     if plat.windows:
-        archive = "android-sdk_{}-windows.zip".format(plat.sdk_version)
-        unpacked = "android-sdk-windows"
+        archive = "commandlinetools-win-{}.zip".format(plat.sdk_version)
     elif plat.macintosh:
-        archive = "android-sdk_{}-macosx.zip".format(plat.sdk_version)
-        unpacked = "android-sdk-macosx"
+        archive = "commandlinetools-mac-{}.zip".format(plat.sdk_version)
     elif plat.linux:
-        archive = "android-sdk_{}-linux.tgz".format(plat.sdk_version)
-        unpacked = "android-sdk-linux"
+        archive = "commandlinetools-linux-{}.zip".format(plat.sdk_version)
 
-    url = "http://dl.google.com/android/" + archive
+    url = "https://dl.google.com/android/repository/" + archive
 
-    interface.info("I'm downloading the Android SDK. This might take a while.")
-
-    interface.download(url, plat.path(archive, replace=False))
-
-    interface.info("I'm extracting the Android SDK.")
-
-    def extract():
-
-        if archive.endswith(".tgz"):
-            tf = tarfile.open(plat.path(archive, replace=False), "r:*")
-            tf.extractall(plat.path("."))
-            tf.close()
-        else:
-            zf = zipfile.ZipFile(plat.path(archive, replace=False))
-
-            # We have to do this because Python has a small (260?) path length
-            # limit on windows, and the Android SDK has a
-            old_cwd = os.getcwd()
-            os.chdir(plat.path("."))
-
-            zf.extractall(".")
-
-            os.chdir(old_cwd)
-
-            zf.close()
-
-    interface.background(extract)
-
-    plat.rename(plat.path(unpacked, replace=False), plat.path("android-sdk"))
-
-    interface.success("I've finished unpacking the Android SDK.")
-
-
-def unpack_ant(interface):
-    if os.path.exists(plat.path("apache-ant")):
-        interface.success("Apache ANT has already been unpacked.")
-        return
-
-    archive = "apache-ant-1.9.3-bin.tar.gz"
-    unpacked = "apache-ant-1.9.3"
-    url = "http://archive.apache.org/dist/ant/binaries/" + archive
-
-    interface.info("I'm downloading Apache Ant. This might take a while.")
+    interface.info(__("I'm downloading the Android SDK. This might take a while."))
 
     interface.download(url, plat.path(archive))
 
-    interface.info("I'm extracting Apache Ant.")
+    interface.info(__("I'm extracting the Android SDK."))
 
-    def extract():
+    # We have to do this because Python has a small (260?) path length
+    # limit on windows, and the Android SDK has very long filenames.
+    old_cwd = os.getcwd()
+    os.chdir(plat.path("."))
 
-        tf = tarfile.open(plat.path(archive), "r:*")
-        tf.extractall(plat.path("."))
-        tf.close()
 
-    interface.background(extract)
+    zip = _FixedZipFile(archive)
+    zip.extractall("Sdk")
+    zip.close()
 
-    interface.success("I've finished unpacking Apache Ant.")
+    # sdkmanager won't run unless we reorganize the unpack.
+    os.rename("Sdk/cmdline-tools", "Sdk/latest")
+    os.mkdir("Sdk/cmdline-tools")
+    os.rename("Sdk/latest", "Sdk/cmdline-tools/latest")
+
+    os.chdir(old_cwd)
+
+    interface.success(__("I've finished unpacking the Android SDK."))
 
 
 def get_packages(interface):
 
     packages = [ ]
 
-    if not os.path.exists(plat.path("android-sdk/build-tools/" + plat.build_version)):
-        packages.append("build-tools-" + plat.build_version)
+    wanted_packages = [
+        ("platform-tools", "platform-tools"),
+        ("platforms;android-36", "platforms/android-36"),
+        ]
 
-    if not os.path.exists(plat.path("android-sdk/platforms/" + plat.target)):
-        packages.append(plat.target)
-
-    if not os.path.exists(plat.path("android-sdk/platform-tools/")):
-        packages.append("platform-tools")
+    for i, j in wanted_packages:
+        if not os.path.exists(os.path.join(plat.sdk, j)):
+            packages.append(i)
 
     if packages:
 
-        interface.info("I'm about to download and install the required Android packages. This might take a while.")
+        interface.info(__("I'm about to download and install the required Android packages. This might take a while."))
 
-        if not run_slow(interface, plat.android, "update", "sdk", "-u", "-f", "-a", "-t", ",".join(packages), yes=True):
-            interface.fail("I was unable to install the required Android packages.")
+        if not run_slow(interface, plat.sdkmanager, "--update", yes=True):
+            interface.fail(__("I was unable to accept the Android licenses."))
 
-    interface.info("I'm updating the library packages.")
+        if not run_slow(interface, plat.sdkmanager, "--licenses", yes=True):
+            interface.fail(__("I was unable to accept the Android licenses."))
 
-    run(interface, plat.android, "update", "project", "-p", plat.path("extras/google/market_licensing/library"), "--target", plat.target)
-    run(interface, plat.android, "update", "project", "-p", plat.path("extras/google/market_apk_expansion/downloader_library"), "--target", plat.target)
+        if not run_slow(interface, plat.sdkmanager, yes=True, *packages):
+            interface.fail(__("I was unable to install the required Android packages."))
 
-    interface.success("I've finished installing the required Android packages.")
+    interface.success(__("I've finished installing the required Android packages."))
 
 
-def generate_keys(interface):
-
-    update_properties = True
-
-    if os.path.exists(plat.path("local.properties")):
-        with open(plat.path("local.properties")) as f:
-            for l in f:
-                if l.startswith("key.store"):
-                    update_properties = False
-
-    if update_properties:
-        f = file(plat.path("local.properties"), "a")
-        print >>f, "key.alias=android"
-        print >>f, "key.store.password=android"
-        print >>f, "key.alias.password=android"
-        print >>f, "key.store=android.keystore"
-        f.close()
-
-    if os.path.exists(plat.path("android.keystore")):
-        interface.info("You've already created an Android keystore, so I won't create a new one for you.")
-        return
-
-    if not interface.yesno("""\
-I can create an application signing key for you. Signing an application with
-this key allows it to be placed in the Android Market and other app stores.
-
-Do you want to create a key?"""):
-        return
-
-    if not interface.yesno("""\
-I will create the key in the android.keystore file.
-
-You need to back this file up. If you lose it, you will not be able to upgrade
-your application.
-
-You also need to keep the key safe. If evil people get this file, they could
-make fake versions of your application, and potentially steal your users'
-data.
-
-Will you make a backup of android.keystore, and keep it in a safe place?"""):
-        return
-
-    org = interface.input("Please enter your name or the name of your organization.")
-
-    dname = "CN=" + org
-
-    if not run(interface, plat.keytool, "-genkey", "-keystore", "android.keystore", "-alias", "android", "-keyalg", "RSA", "-keysize", "2048", "-keypass", "android", "-storepass", "android", "-dname", dname, "-validity", "20000", use_path=True):
-        interface.fail("Could not create android.keystore. Is keytool in your path?")
-
-    interface.success("""I've finished creating android.keystore. Please back it up, and keep it in a safe place.""")
 
 
 def install_sdk(interface):
+
+    # Create the project directory.
+    import rapt.build
+    rapt.build.copy_project(False)
+
     check_java(interface)
-    unpack_ant(interface)
+
     unpack_sdk(interface)
 
-    if plat.macintosh or plat.linux:
-        os.chmod(plat.path("android-sdk/tools/android"), 0755)
-
     get_packages(interface)
-    generate_keys(interface)
 
-    interface.final_success("It looks like you're ready to start packaging games.")
+    interface.final_success(__("It looks like you're ready to start packaging games."))
