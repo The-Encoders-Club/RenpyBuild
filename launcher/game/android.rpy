@@ -180,7 +180,7 @@ init python:
 
 
         with open(filename, "w") as f:
-            json.dump(android_json, f)
+            json.dump(android_json, f, indent=4)
 
     def android_build(command, p=None, gui=True, launch=False, destination=None, opendir=False):
         """
