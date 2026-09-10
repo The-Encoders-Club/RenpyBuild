@@ -1624,6 +1624,9 @@ class Interface(object):
         # True if this is the first interact.
         self.start_interact = True
 
+        # True if this is the first frame to be drawn.
+        self.first_frame = True
+
     def setup_dpi_scaling(self):
 
         if "RENPY_HIGHDPI" in os.environ:
@@ -1733,6 +1736,28 @@ class Interface(object):
                 continue
 
             pygame.event.set_blocked(i)
+
+    def after_first_frame(self):
+        """
+        Called after the first frame has been drawn.
+        """
+        if renpy.android:
+            try:
+                import androidembed
+                androidembed.log("[PRESPLASH] after_first_frame invocado desde Python Ren'Py!")
+            except Exception:
+                pass
+
+            try:
+                from jnius import autoclass
+                PythonSDLActivity = autoclass("org.renpy.android.PythonSDLActivity")
+                PythonSDLActivity.hidePresplash()
+            except Exception as e:
+                try:
+                    import androidembed
+                    androidembed.log("[PRESPLASH ERROR] " + str(e))
+                except Exception:
+                    pass
 
     def set_icon(self):
         """
@@ -1963,6 +1988,10 @@ class Interface(object):
 
         self.surftree = surftree
         self.fullscreen_video = fullscreen_video
+
+        if self.first_frame:
+            self.first_frame = False
+            self.after_first_frame()
 
     def take_screenshot(self, scale, background=False):
         """
@@ -2340,6 +2369,20 @@ class Interface(object):
         save()
 
         if renpy.config.quit_on_mobile_background:
+            if renpy.android:
+                try:
+                    import android
+                    android.activity.finishAndRemoveTask()
+                except Exception:
+                    pass
+
+                try:
+                    from jnius import autoclass
+                    System = autoclass("java.lang.System")
+                    System.exit(0)
+                except Exception:
+                    pass
+
             sys.exit(0)
 
         renpy.exports.free_memory()
