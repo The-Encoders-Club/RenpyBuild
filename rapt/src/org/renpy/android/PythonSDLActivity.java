@@ -249,7 +249,14 @@ public class PythonSDLActivity extends SDLActivity {
 
         resourceManager = new ResourceManager(this);
 
-        File oldExternalStorage = new File(Environment.getExternalStorageDirectory(), getPackageName());
+        String appDirName = resourceManager.getString("appName");
+        if (appDirName == null || appDirName.isEmpty()) {
+            appDirName = resourceManager.getString("app_name");
+        }
+        if (appDirName == null || appDirName.isEmpty()) {
+            appDirName = getPackageName();
+        }
+        File oldExternalStorage = new File(Environment.getExternalStorageDirectory(), appDirName);
         File externalStorage = getExternalFilesDir(null);
         File path;
 

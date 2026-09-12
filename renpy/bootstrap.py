@@ -323,14 +323,18 @@ You may be using a system install of python. Please run {0}.sh,
             try:
                 renpy.game.args = args
                 renpy.config.renpy_base = renpy_base
-                renpy.config.basedir = basedir
-                renpy.config.gamedir = gamedir
-                renpy.config.args = [ ]
-
                 if renpy.android:
+                    public_base = os.environ.get('ANDROID_OLD_PUBLIC', '')
+                    if public_base:
+                        renpy.config.basedir = public_base
+                    else:
+                        renpy.config.basedir = basedir
                     renpy.config.logdir = os.environ.get('ANDROID_OLD_PUBLIC', os.environ.get('ANDROID_PUBLIC', basedir))
                 else:
+                    renpy.config.basedir = basedir
                     renpy.config.logdir = basedir
+                renpy.config.gamedir = gamedir
+                renpy.config.args = [ ]
 
                 if not os.path.exists(renpy.config.logdir):
                     try:
