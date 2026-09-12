@@ -17,3 +17,5 @@
 **.dll
 **.pyd
 **/stockfish_8_*
+**/ssl/linux/**
+**/ssl/mac/**
