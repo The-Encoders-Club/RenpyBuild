@@ -544,7 +544,7 @@ def split_renpy(directory):
 
 GENERATED = [
     (False, "templates/app-build.gradle", "project/app/build.gradle"),
-    (False, "templates/app-AndroidManifest.xml", "project/app/src/main/AndroidManifest.xml"),
+    (True, "templates/app-AndroidManifest.xml", "project/app/src/main/AndroidManifest.xml"),
     (False, "templates/app-strings.xml", "project/app/src/main/res/values/strings.xml"),
     (False, "templates/renpyandroid-AndroidManifest.xml", "project/renpyandroid/src/main/AndroidManifest.xml"),
     (False, "templates/renpyandroid-strings.xml", "project/renpyandroid/src/main/res/values/strings.xml"),
@@ -821,6 +821,14 @@ def build(iface, directory, base=None, install=False, bundle=False, launch=False
         if os.path.exists(i):
             shutil.rmtree(i)
 
+    # Clean intermediate assets to avoid Gradle CompressAssetsWorkAction collision
+    inter_assets = plat.path("project/app/build/intermediates/compressed_assets")
+    if os.path.exists(inter_assets):
+        shutil.rmtree(inter_assets, ignore_errors=True)
+    inter_merged = plat.path("project/app/build/intermediates/assets")
+    if os.path.exists(inter_merged):
+        shutil.rmtree(inter_merged, ignore_errors=True)
+
     # Build.
     iface.info(__("I'm using Gradle to build the package."))
 
@@ -903,7 +911,7 @@ def build(iface, directory, base=None, install=False, bundle=False, launch=False
     if launch:
         iface.info(__("Launching app."))
 
-        launch_activity = "PythonSDLActivity"
+        launch_activity = "PermissionGateActivity"
 
         try:
 
