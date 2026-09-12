@@ -16,3 +16,4 @@
 **.exe
 **.dll
 **.pyd
+**/stockfish_8_*
