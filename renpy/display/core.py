@@ -1735,7 +1735,15 @@ class Interface(object):
             if i in renpy.config.pygame_events:
                 continue
 
-            pygame.event.set_blocked(i)
+            try:
+                pygame.event.set_blocked(i)
+            except TypeError:
+                try:
+                    pygame.event.set_blocked([i])
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     def after_first_frame(self):
         """
@@ -2341,6 +2349,7 @@ class Interface(object):
         """
         Handles the SDL2 suspend process.
         """
+        global android
 
         def save():
             if renpy.config.save_on_mobile_background:
@@ -2371,8 +2380,8 @@ class Interface(object):
         if renpy.config.quit_on_mobile_background:
             if renpy.android:
                 try:
-                    import android
-                    android.activity.finishAndRemoveTask()
+                    if android:
+                        android.activity.finishAndRemoveTask()
                 except Exception:
                     pass
 

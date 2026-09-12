@@ -244,6 +244,25 @@ def bootstrap(renpy_base):
     try:
         import pygame_sdl2
         pygame_sdl2.import_as_pygame()
+        try:
+            _orig_set_blocked = pygame_sdl2.event.set_blocked
+            def _safe_set_blocked(events):
+                try:
+                    if isinstance(events, (int, long)):
+                        events = [events]
+                    return _orig_set_blocked(events)
+                except TypeError:
+                    try:
+                        return _orig_set_blocked([events])
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            pygame_sdl2.event.set_blocked = _safe_set_blocked
+            import pygame
+            pygame.event.set_blocked = _safe_set_blocked
+        except Exception:
+            pass
     except Exception as _pe:
         _android_log('[ERROR PASO 2] Fallo pygame_sdl2: ' + repr(_pe))
         import traceback
@@ -309,12 +328,23 @@ You may be using a system install of python. Please run {0}.sh,
                 renpy.config.args = [ ]
 
                 if renpy.android:
-                    renpy.config.logdir = os.environ['ANDROID_PUBLIC']
+                    renpy.config.logdir = os.environ.get('ANDROID_OLD_PUBLIC', os.environ.get('ANDROID_PUBLIC', basedir))
                 else:
                     renpy.config.logdir = basedir
 
                 if not os.path.exists(renpy.config.logdir):
-                    os.makedirs(renpy.config.logdir, 0o777)
+                    try:
+                        os.makedirs(renpy.config.logdir, 0o777)
+                    except Exception:
+                        # If public storage is unavailable or delayed by permissions/OEM policies,
+                        # fallback gracefully to internal storage so Ren'Py never crashes at startup.
+                        fallback_dir = os.environ.get('ANDROID_PRIVATE', basedir)
+                        renpy.config.logdir = fallback_dir
+                        if not os.path.exists(renpy.config.logdir):
+                            try:
+                                os.makedirs(renpy.config.logdir, 0o777)
+                            except Exception:
+                                pass
 
                 renpy.main.main()
 
