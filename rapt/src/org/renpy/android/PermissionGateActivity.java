@@ -50,13 +50,13 @@ import java.util.Locale;
  * Pre-launch gateway activity (LAUNCHER) that requests mandatory external storage
  * and notification permissions before the Ren'Py engine (PythonSDLActivity) initializes.
  *
- * Features:
- * - 100% solid pure black background (#000000) on window, root layout, and system bars.
- * - Consecutive permission workflow on "Aceptar": requests notifications immediately followed by storage.
- * - Dialogue textbox (mod_assets/panels/textbox.png) with fixed non-shifting layout and typewriter effect.
- * - Authentic mod buttons (mod_assets/buttons/hkb_idle_background.png and hkb_hover_background.png).
- * - Reliable audio engine for hover (button_hover_day.ogg) and click (button_click_day.ogg).
- * - Accent-free text to ensure compatibility with custom fonts lacking accented glyphs.
+ * Designed for Monika After Story (MAS):
+ * - Pure solid black background (#000000) for immersive aesthetic.
+ * - Dialogue textbox (game/gui/textbox.png / textbox_d.png / textbox_monika_d.png).
+ * - Choice menu buttons styled with DDLC aesthetics and emerald green hover accent (#5DE23C).
+ * - Full automatic initialization of public storage directories in /sdcard/Monika After Story/.
+ * - Consecutive permission workflow on "Aceptar": notifications first, followed immediately by storage.
+ * - Accent-free text to ensure compatibility with custom ASCII DDLC fonts.
  */
 public class PermissionGateActivity extends Activity {
 
@@ -65,18 +65,23 @@ public class PermissionGateActivity extends Activity {
     private static final int REQUEST_CODE_LEGACY_PERMISSIONS = 1002;
     private static final int REQUEST_CODE_POST_NOTIFICATIONS = 1003;
 
-    // Mod asset paths
-    private static final String ASSET_TEXTBOX_MOD = "x-game/x-mod_assets/x-panels/x-textbox.png";
-    private static final String ASSET_TEXTBOX_FALLBACK = "x-game/x-gui/x-textbox.png";
-    private static final String ASSET_CHOICE_IDLE = "x-game/x-mod_assets/x-buttons/x-hkb_idle_background.png";
-    private static final String ASSET_CHOICE_HOVER = "x-game/x-mod_assets/x-buttons/x-hkb_hover_background.png";
-    private static final String ASSET_FONT = "x-game/x-mod_assets/x-fonts/x-natsuki.ttf";
+    // DDLC / MAS asset paths with x- prefix applied by RAPT packaging
+    private static final String ASSET_TEXTBOX_PRIMARY = "x-game/x-gui/x-textbox.png";
+    private static final String ASSET_TEXTBOX_DARK = "x-game/x-gui/x-textbox_d.png";
+    private static final String ASSET_TEXTBOX_MONIKA = "x-game/x-gui/x-textbox_monika_d.png";
+    private static final String ASSET_CHOICE_IDLE = "x-game/x-gui/x-button/x-choice_idle_background.png";
+    private static final String ASSET_CHOICE_HOVER = "x-game/x-gui/x-button/x-choice_hover_background.png";
+    private static final String ASSET_CHOICE_DARK_IDLE = "x-game/x-gui/x-button/x-choice_dark_idle_background.png";
+    private static final String ASSET_CHOICE_DARK_HOVER = "x-game/x-gui/x-button/x-choice_dark_hover_background.png";
+    private static final String ASSET_FONT_M1 = "x-game/x-mod_assets/x-font/x-m1_fixed.ttf";
+    private static final String ASSET_FONT_M1_ES = "x-game/x-tl/x-spanish/x-m1_fixed.ttf";
+    private static final String ASSET_FONT_ROOT = "x-game/x-m1.ttf";
     private static final String ASSET_SFX_HOVER = "x-game/x-mod_assets/x-buttons/x-sounds/x-button_hover_day.ogg";
     private static final String ASSET_SFX_CONFIRM = "x-game/x-mod_assets/x-buttons/x-sounds/x-button_click_day.ogg";
 
-    // Text colors matching DDLC / Just Natsuki
+    // Palette matching Monika / DDLC UI
     private static final int COLOR_CHOICE_IDLE = Color.parseColor("#e2d1d1");
-    private static final int COLOR_CHOICE_HOVER = Color.parseColor("#FF8ED0");
+    private static final int COLOR_CHOICE_HOVER = Color.parseColor("#5DE23C"); // Emerald green
     private static final int COLOR_TEXTBOX_TEXT = Color.parseColor("#ffffff");
 
     private boolean isRequestingStorage = false;
@@ -90,7 +95,7 @@ public class PermissionGateActivity extends Activity {
 
     private Drawable drawableChoiceIdle;
     private Drawable drawableChoiceHover;
-    private Typeface natsukiTypeface;
+    private Typeface monikaTypeface;
 
     private Handler typewriterHandler;
     private Runnable typewriterRunnable;
@@ -107,7 +112,7 @@ public class PermissionGateActivity extends Activity {
             appName = resourceManager.getString("app_name");
         }
         if (appName == null || appName.isEmpty()) {
-            appName = "Just Natsuki";
+            appName = "Monika After Story";
         }
         return appName;
     }
@@ -210,12 +215,10 @@ public class PermissionGateActivity extends Activity {
      */
     private int loadSoundReliably(String assetPath, boolean isHover) {
         if (soundPool == null) return -1;
-        // First try standard AssetFileDescriptor
         try {
             AssetFileDescriptor afd = getAssets().openFd(assetPath);
             return soundPool.load(afd, 1);
         } catch (Exception e1) {
-            // Fallback for compressed assets in APK: copy to cache directory
             try (InputStream is = getAssets().open(assetPath)) {
                 File cacheFile = new File(getCacheDir(), "sfx_" + (isHover ? "hover.ogg" : "click.ogg"));
                 try (FileOutputStream fos = new FileOutputStream(cacheFile)) {
@@ -233,7 +236,7 @@ public class PermissionGateActivity extends Activity {
                 }
                 return soundPool.load(cacheFile.getAbsolutePath(), 1);
             } catch (Exception e2) {
-                Log.w(TAG, "Failed to load sound asset: " + assetPath, e2);
+                Log.w(TAG, "Could not load sound asset: " + assetPath);
             }
         }
         return -1;
@@ -246,7 +249,6 @@ public class PermissionGateActivity extends Activity {
                 return;
             }
         }
-        // Fallback MediaPlayer playback if SoundPool stream was not ready
         File cacheFile = isHover ? hoverSoundCacheFile : confirmSoundCacheFile;
         if (cacheFile != null && cacheFile.exists()) {
             try {
@@ -271,7 +273,7 @@ public class PermissionGateActivity extends Activity {
                 return new BitmapDrawable(getResources(), bitmap);
             }
         } catch (Exception e) {
-            Log.w(TAG, "Could not load asset bitmap: " + assetPath, e);
+            // Asset not found or alternative path
         }
         return null;
     }
@@ -280,16 +282,32 @@ public class PermissionGateActivity extends Activity {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         float scaleFactor = (float) dm.heightPixels / 720.0f;
 
-        // Load custom Natsuki typeface if present
-        try {
-            natsukiTypeface = Typeface.createFromAsset(getAssets(), ASSET_FONT);
-        } catch (Exception e) {
-            Log.w(TAG, "Could not load natsuki.ttf from assets, using default sans-serif", e);
-            natsukiTypeface = Typeface.SANS_SERIF;
+        // Attempt to load Monika custom font
+        String[] fontCandidates = new String[]{
+                ASSET_FONT_M1,
+                ASSET_FONT_M1_ES,
+                ASSET_FONT_ROOT
+        };
+        for (String fPath : fontCandidates) {
+            try {
+                monikaTypeface = Typeface.createFromAsset(getAssets(), fPath);
+                if (monikaTypeface != null) break;
+            } catch (Exception ignored) {
+            }
+        }
+        if (monikaTypeface == null) {
+            monikaTypeface = Typeface.SANS_SERIF;
         }
 
+        // Load DDLC choice button backgrounds (with dark / fallback options)
         drawableChoiceIdle = loadAssetDrawable(ASSET_CHOICE_IDLE);
+        if (drawableChoiceIdle == null) {
+            drawableChoiceIdle = loadAssetDrawable(ASSET_CHOICE_DARK_IDLE);
+        }
         drawableChoiceHover = loadAssetDrawable(ASSET_CHOICE_HOVER);
+        if (drawableChoiceHover == null) {
+            drawableChoiceHover = loadAssetDrawable(ASSET_CHOICE_DARK_HOVER);
+        }
 
         // Root container: fullscreen canvas with pure solid black background
         FrameLayout rootLayout = new FrameLayout(this);
@@ -299,7 +317,7 @@ public class PermissionGateActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
 
-        // 1. BUTTON CONTAINER (Lowered vertically for better visual balance)
+        // 1. BUTTON CONTAINER (Centered horizontally, positioned ~28% from top)
         LinearLayout buttonContainer = new LinearLayout(this);
         buttonContainer.setOrientation(LinearLayout.VERTICAL);
         buttonContainer.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -309,7 +327,6 @@ public class PermissionGateActivity extends Activity {
                 FrameLayout.LayoutParams.WRAP_CONTENT
         );
         buttonParams.gravity = Gravity.CENTER_HORIZONTAL | Gravity.TOP;
-        // Position buttons lower down (~28% from top, matching Ren'Py choice layout)
         buttonParams.topMargin = (int) (180 * scaleFactor);
         buttonContainer.setLayoutParams(buttonParams);
 
@@ -328,7 +345,6 @@ public class PermissionGateActivity extends Activity {
             exitApp();
         });
 
-        // Vertical spacing between buttons (14dp scaled)
         LinearLayout.LayoutParams btnLayoutParam = (LinearLayout.LayoutParams) acceptButton.getLayoutParams();
         btnLayoutParam.bottomMargin = (int) (14 * scaleFactor);
         acceptButton.setLayoutParams(btnLayoutParam);
@@ -337,7 +353,7 @@ public class PermissionGateActivity extends Activity {
         buttonContainer.addView(denyButton);
         rootLayout.addView(buttonContainer);
 
-        // 2. BOTTOM TEXTBOX CONTAINER (Strictly fixed width & height to prevent shifting)
+        // 2. BOTTOM TEXTBOX CONTAINER (Strictly fixed width & height: 816x146 scaled)
         int tbWidth = (int) (816 * scaleFactor);
         int tbHeight = (int) (146 * scaleFactor);
 
@@ -347,11 +363,14 @@ public class PermissionGateActivity extends Activity {
         tbContainerParams.bottomMargin = (int) (10 * scaleFactor);
         textboxContainer.setLayoutParams(tbContainerParams);
 
-        // Textbox background image (from mod assets)
+        // Textbox background image
         ImageView textboxBg = new ImageView(this);
-        Drawable tbDrawable = loadAssetDrawable(ASSET_TEXTBOX_MOD);
+        Drawable tbDrawable = loadAssetDrawable(ASSET_TEXTBOX_PRIMARY);
         if (tbDrawable == null) {
-            tbDrawable = loadAssetDrawable(ASSET_TEXTBOX_FALLBACK);
+            tbDrawable = loadAssetDrawable(ASSET_TEXTBOX_MONIKA);
+        }
+        if (tbDrawable == null) {
+            tbDrawable = loadAssetDrawable(ASSET_TEXTBOX_DARK);
         }
         if (tbDrawable != null) {
             textboxBg.setImageDrawable(tbDrawable);
@@ -365,18 +384,17 @@ public class PermissionGateActivity extends Activity {
 
         // Dialogue text inside textbox
         dialogueTextView = new TextView(this);
-        if (natsukiTypeface != null) {
-            dialogueTextView.setTypeface(natsukiTypeface);
+        if (monikaTypeface != null) {
+            dialogueTextView.setTypeface(monikaTypeface);
         }
         dialogueTextView.setTextColor(COLOR_TEXTBOX_TEXT);
-        // Say text size matching native Ren'Py 22-23sp scaled
         dialogueTextView.setTextSize(TypedValue.COMPLEX_UNIT_PX, 22.0f * scaleFactor);
         dialogueTextView.setLineSpacing(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 3, dm), 1.0f);
         dialogueTextView.setShadowLayer(3.0f, 1.0f, 1.0f, Color.parseColor("#000000"));
         dialogueTextView.setGravity(Gravity.TOP | Gravity.START);
         dialogueTextView.setMaxLines(4);
 
-        // Inner margins for the dialogue text inside the 816x146 box
+        // Inner margins for the dialogue text inside the box
         FrameLayout.LayoutParams tvParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -392,11 +410,11 @@ public class PermissionGateActivity extends Activity {
 
         setContentView(rootLayout);
 
-        // 3. DIALOGUE TEXT (Strictly accent-free to prevent missing character gaps)
+        // 3. DIALOGUE TEXT (Strictly accent-free to prevent missing character gaps with ASCII fonts)
         if (isSpanish) {
-            fullDialogueText = "Just Natsuki requiere permisos de almacenamiento para gestionar tus partidas, submods y regalos en la memoria externa. Sin este permiso, la aplicacion no puede iniciar.";
+            fullDialogueText = "Monika After Story requiere permisos de almacenamiento para gestionar tus partidas, regalos y submods en la memoria externa. Sin este permiso, la aplicacion no puede iniciar.";
         } else {
-            fullDialogueText = "Just Natsuki requires storage permissions to manage your save data, submods, and gifts in external storage. Without this permission, the application cannot start.";
+            fullDialogueText = "Monika After Story requires storage permissions to manage your save data, gifts, and submods in external storage. Without this permission, the application cannot start.";
         }
 
         startTypewriterEffect();
@@ -408,8 +426,8 @@ public class PermissionGateActivity extends Activity {
 
         TextView button = new TextView(this);
         button.setText(text);
-        if (natsukiTypeface != null) {
-            button.setTypeface(natsukiTypeface);
+        if (monikaTypeface != null) {
+            button.setTypeface(monikaTypeface);
         }
         button.setTextColor(COLOR_CHOICE_IDLE);
         button.setTextSize(TypedValue.COMPLEX_UNIT_PX, 18.0f * scaleFactor);
@@ -483,7 +501,6 @@ public class PermissionGateActivity extends Activity {
         typewriterIndex = 0;
         dialogueTextView.setText("");
 
-        // Approximately 35 characters per second (~28ms per character)
         final long delayMillis = 28;
 
         typewriterRunnable = new Runnable() {
@@ -578,7 +595,6 @@ public class PermissionGateActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
         if (requestCode == REQUEST_CODE_POST_NOTIFICATIONS) {
-            // Notification response received, immediately proceed to storage permission
             if (!hasStoragePermission()) {
                 requestStoragePermission();
             } else {
@@ -621,16 +637,40 @@ public class PermissionGateActivity extends Activity {
             File extDir = Environment.getExternalStorageDirectory();
             String appDirName = getAppName();
 
+            File basePublic = new File(extDir, appDirName);
+            if (basePublic.exists() || basePublic.mkdirs()) {
+                File nomedia = new File(basePublic, ".nomedia");
+                if (!nomedia.exists()) {
+                    nomedia.createNewFile();
+                }
+            }
+
+            // Comprehensive directory structure for Monika After Story
             String[] dirsToCreate = new String[]{
                     "",
+                    "characters",
+                    "chess_games",
+                    "log",
+                    "logs",
+                    "custom_bgm",
                     "game",
                     "game/saves",
                     "game/Submods",
-                    "characters"
+                    "game/python-packages",
+                    "game/mod_assets",
+                    "game/mod_assets/location",
+                    "game/mod_assets/thumbs",
+                    "game/mod_assets/monika",
+                    "game/mod_assets/monika/a",
+                    "game/mod_assets/monika/c",
+                    "game/mod_assets/monika/f",
+                    "game/mod_assets/monika/h",
+                    "game/mod_assets/monika/j",
+                    "game/mod_assets/monika/t"
             };
 
             for (String sub : dirsToCreate) {
-                File dir = sub.isEmpty() ? new File(extDir, appDirName) : new File(extDir, appDirName + "/" + sub);
+                File dir = sub.isEmpty() ? basePublic : new File(basePublic, sub);
                 if (!dir.exists()) {
                     dir.mkdirs();
                 }
