@@ -276,7 +276,12 @@ def main():
         renpy.config.commondir = None
 
     if renpy.android:
-        renpy.config.searchpath = [ ]
+        public_base = os.environ.get("ANDROID_OLD_PUBLIC", "")
+        public_gamedir = os.path.join(public_base, "game") if public_base else None
+        if public_gamedir and os.path.isdir(public_gamedir):
+            renpy.config.searchpath = [ public_gamedir, renpy.config.gamedir ]
+        else:
+            renpy.config.searchpath = [ renpy.config.gamedir ]
         renpy.config.commondir = None
 
     # Load Ren'Py extensions.

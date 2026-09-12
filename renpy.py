@@ -63,20 +63,24 @@ def path_to_saves(gamedir, save_directory=None):
 
     # Android.
     if renpy.android:
+        public_base = os.environ.get("ANDROID_OLD_PUBLIC", "")
         paths = [
-            os.path.join(os.environ["ANDROID_OLD_PUBLIC"], "game/saves"),
-            os.path.join(os.environ["ANDROID_PRIVATE"], "saves"),
-            os.path.join(os.environ["ANDROID_PUBLIC"], "saves"),
+            os.path.join(public_base, "game/saves"),
+            os.path.join(public_base, "saves"),
             ]
 
         for rv in paths:
+            if not os.path.exists(rv):
+                try:
+                    os.makedirs(rv)
+                except Exception:
+                    pass
             if os.path.isdir(rv) and test_writable(rv):
                 break
+        else:
+            rv = os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "saves")
 
         print("Saving to", rv)
-
-        # We return the last path as the default.
-
         return rv
 
     if renpy.ios:
