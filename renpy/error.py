@@ -240,6 +240,18 @@ def report_exception(e, editor=True):
         f.write(full)
         f.close()
 
+        # Mirror copy for Android private data backup
+        if renpy.android and "ANDROID_PRIVATE" in os.environ:
+            try:
+                backup_fn = os.path.join(os.environ["ANDROID_PRIVATE"], "traceback.txt")
+                with open(backup_fn, "w") as bf:
+                    bf.write(codecs.BOM_UTF8)
+                    bf.write(simple)
+                    bf.write("\n-- Full Traceback ------------------------------------------------------------\n")
+                    bf.write(full)
+            except Exception:
+                pass
+
         try:
             if editor and renpy.game.args.command == "run":  # @UndefinedVariable
                 renpy.exports.launch_editor([ traceback_fn ], 1, transient=1)
