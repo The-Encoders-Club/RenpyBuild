@@ -9,3 +9,10 @@
 **.pxd
 
 **/.**
+
+**.rpa
+**.ico
+**.icns
+**.exe
+**.dll
+**.pyd
