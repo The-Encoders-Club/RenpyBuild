@@ -1,7 +1,14 @@
 package org.renpy.android;
 
 import android.Manifest;
+import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.text.TextPaint;
+import android.text.Layout;
 import android.app.Activity;
+import android.app.ActivityManager;
+import java.util.List;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.AssetFileDescriptor;
@@ -47,15 +54,21 @@ import java.util.Locale;
 /**
  * PermissionGateActivity
  *
- * Pre-launch gateway activity (LAUNCHER) that requests mandatory external storage
- * and notification permissions before the Ren'Py engine (PythonSDLActivity) initializes.
+ * Pre-launch gateway activity (LAUNCHER) that requests mandatory external
+ * storage
+ * and notification permissions before the Ren'Py engine (PythonSDLActivity)
+ * initializes.
  *
  * Designed for Monika After Story (MAS):
  * - Pure solid black background (#000000) for immersive aesthetic.
- * - Dialogue textbox (game/gui/textbox.png / textbox_d.png / textbox_monika_d.png).
- * - Choice menu buttons styled with DDLC aesthetics and emerald green hover accent (#5DE23C).
- * - Full automatic initialization of public storage directories in /sdcard/Monika After Story/.
- * - Consecutive permission workflow on "Aceptar": notifications first, followed immediately by storage.
+ * - Dialogue textbox (game/gui/textbox.png / textbox_d.png /
+ * textbox_monika_d.png).
+ * - Choice menu buttons styled with DDLC aesthetics and emerald green hover
+ * accent (#5DE23C).
+ * - Full automatic initialization of public storage directories in
+ * /sdcard/Monika After Story/.
+ * - Consecutive permission workflow on "Aceptar": notifications first, followed
+ * immediately by storage.
  * - Accent-free text to ensure compatibility with custom ASCII DDLC fonts.
  */
 public class PermissionGateActivity extends Activity {
@@ -73,16 +86,25 @@ public class PermissionGateActivity extends Activity {
     private static final String ASSET_CHOICE_HOVER = "x-game/x-gui/x-button/x-choice_hover_background.png";
     private static final String ASSET_CHOICE_DARK_IDLE = "x-game/x-gui/x-button/x-choice_dark_idle_background.png";
     private static final String ASSET_CHOICE_DARK_HOVER = "x-game/x-gui/x-button/x-choice_dark_hover_background.png";
-    private static final String ASSET_FONT_M1 = "x-game/x-mod_assets/x-font/x-m1_fixed.ttf";
-    private static final String ASSET_FONT_M1_ES = "x-game/x-tl/x-spanish/x-m1_fixed.ttf";
-    private static final String ASSET_FONT_ROOT = "x-game/x-m1.ttf";
+    private static final String ASSET_FONT_ALLER = "x-game/x-gui/x-font/x-Aller_Rg.ttf";
+    private static final String ASSET_FONT_ALLER_ALT = "x-game/x-gui/x-font/Aller_Rg.ttf";
     private static final String ASSET_SFX_HOVER = "x-game/x-mod_assets/x-buttons/x-sounds/x-button_hover_day.ogg";
     private static final String ASSET_SFX_CONFIRM = "x-game/x-mod_assets/x-buttons/x-sounds/x-button_click_day.ogg";
+    private static final String[] ASSET_SFX_HOVER_CANDIDATES = new String[] {
+            "x-game/x-mod_assets/x-buttons/x-sounds/x-button_hover_day.ogg",
+            "x-game/x-gui/x-sfx/x-hover.ogg",
+            "game/gui/sfx/hover.ogg"
+    };
+    private static final String[] ASSET_SFX_CONFIRM_CANDIDATES = new String[] {
+            "x-game/x-mod_assets/x-buttons/x-sounds/x-button_click_day.ogg",
+            "x-game/x-gui/x-sfx/x-select.ogg",
+            "game/gui/sfx/select.ogg"
+    };
 
     // Palette matching Monika / DDLC UI
-    private static final int COLOR_CHOICE_IDLE = Color.parseColor("#e2d1d1");
-    private static final int COLOR_CHOICE_HOVER = Color.parseColor("#5DE23C"); // Emerald green
-    private static final int COLOR_TEXTBOX_TEXT = Color.parseColor("#ffffff");
+    private static final int COLOR_CHOICE_IDLE = Color.BLACK;
+    private static final int COLOR_CHOICE_HOVER = 0xFFFFAA99; // DDLC choice hover color (#FFAA99 / #fa9)
+    private static final int COLOR_TEXTBOX_TEXT = Color.WHITE;
 
     private boolean isRequestingStorage = false;
     private ResourceManager resourceManager;
@@ -96,6 +118,37 @@ public class PermissionGateActivity extends Activity {
     private Drawable drawableChoiceIdle;
     private Drawable drawableChoiceHover;
     private Typeface monikaTypeface;
+
+    private static class ChoiceButtonHolder {
+        final View view;
+        final Runnable action;
+
+        ChoiceButtonHolder(View view, Runnable action) {
+            this.view = view;
+            this.action = action;
+        }
+
+        void setHovered(boolean hovered, Drawable idleBg, Drawable hoverBg, int idleColor, int hoverColor) {
+            if (view instanceof TextView) {
+                ((TextView) view).setTextColor(hovered ? hoverColor : idleColor);
+            }
+            if (hovered) {
+                if (hoverBg != null) {
+                    view.setBackground(hoverBg.getConstantState().newDrawable());
+                }
+            } else {
+                if (idleBg != null) {
+                    view.setBackground(idleBg.getConstantState().newDrawable());
+                }
+            }
+        }
+    }
+
+    private final java.util.List<ChoiceButtonHolder> choiceButtonHolders = new java.util.ArrayList<>();
+    private ChoiceButtonHolder currentlyHoveredHolder = null;
+    private float touchDownX = 0f;
+    private float touchDownY = 0f;
+    private long touchDownTime = 0L;
 
     private Handler typewriterHandler;
     private Runnable typewriterRunnable;
@@ -135,7 +188,8 @@ public class PermissionGateActivity extends Activity {
         // Hide navigation and status bars for full immersive feeling
         hideSystemUI();
 
-        // If storage permission is already granted, proceed immediately without displaying the gate
+        // If storage permission is already granted, proceed immediately without
+        // displaying the gate
         if (hasStoragePermission()) {
             createExternalStorageDirectories();
             checkNotificationPermissionAndProceed();
@@ -203,18 +257,28 @@ public class PermissionGateActivity extends Activity {
                 soundPool = new SoundPool(4, AudioManager.STREAM_MUSIC, 0);
             }
 
-            soundHoverId = loadSoundReliably(ASSET_SFX_HOVER, true);
-            soundConfirmId = loadSoundReliably(ASSET_SFX_CONFIRM, false);
+            for (String p : ASSET_SFX_HOVER_CANDIDATES) {
+                soundHoverId = loadSoundReliably(p, true);
+                if (soundHoverId != -1)
+                    break;
+            }
+            for (String p : ASSET_SFX_CONFIRM_CANDIDATES) {
+                soundConfirmId = loadSoundReliably(p, false);
+                if (soundConfirmId != -1)
+                    break;
+            }
         } catch (Exception e) {
             Log.w(TAG, "Failed to initialize SoundPool", e);
         }
     }
 
     /**
-     * Loads sound into SoundPool reliably, caching compressed APK streams to disk when needed.
+     * Loads sound into SoundPool reliably, caching compressed APK streams to disk
+     * when needed.
      */
     private int loadSoundReliably(String assetPath, boolean isHover) {
-        if (soundPool == null) return -1;
+        if (soundPool == null)
+            return -1;
         try {
             AssetFileDescriptor afd = getAssets().openFd(assetPath);
             return soundPool.load(afd, 1);
@@ -282,21 +346,21 @@ public class PermissionGateActivity extends Activity {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         float scaleFactor = (float) dm.heightPixels / 720.0f;
 
-        // Attempt to load Monika custom font
-        String[] fontCandidates = new String[]{
-                ASSET_FONT_M1,
-                ASSET_FONT_M1_ES,
-                ASSET_FONT_ROOT
+        // Load official MAS / DDLC font (Aller_Rg.ttf) with system default as fallback
+        String[] fontCandidates = new String[] {
+                ASSET_FONT_ALLER,
+                ASSET_FONT_ALLER_ALT
         };
         for (String fPath : fontCandidates) {
             try {
                 monikaTypeface = Typeface.createFromAsset(getAssets(), fPath);
-                if (monikaTypeface != null) break;
+                if (monikaTypeface != null)
+                    break;
             } catch (Exception ignored) {
             }
         }
         if (monikaTypeface == null) {
-            monikaTypeface = Typeface.SANS_SERIF;
+            monikaTypeface = Typeface.DEFAULT;
         }
 
         // Load DDLC choice button backgrounds (with dark / fallback options)
@@ -310,58 +374,79 @@ public class PermissionGateActivity extends Activity {
         }
 
         // Root container: fullscreen canvas with pure solid black background
-        FrameLayout rootLayout = new FrameLayout(this);
+        // Overrides dispatchTouchEvent so finger touch anywhere on screen acts as mouse
+        // cursor
+        FrameLayout rootLayout = new FrameLayout(this) {
+            @Override
+            public boolean dispatchTouchEvent(MotionEvent ev) {
+                handleScreenTouch(ev);
+                return true;
+            }
+        };
         rootLayout.setBackgroundColor(Color.BLACK);
+        rootLayout.setClipChildren(false);
+        rootLayout.setClipToPadding(false);
         rootLayout.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
+                ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 1. BUTTON CONTAINER (Centered horizontally, positioned ~28% from top)
+        // 1. BUTTON CONTAINER (Ren'Py choice_vbox: xalign 0.5, ypos 270, yanchor 0.5,
+        // spacing 22)
         LinearLayout buttonContainer = new LinearLayout(this);
         buttonContainer.setOrientation(LinearLayout.VERTICAL);
         buttonContainer.setGravity(Gravity.CENTER_HORIZONTAL);
 
+        int btnWidth = (int) (420 * scaleFactor);
+        int btnHeight = (int) (38 * scaleFactor);
+        int btnSpacing = (int) (22 * scaleFactor); // gui.choice_spacing = 22
+
+        // Total height of 2 buttons + spacing: (38 * 2 + 22) = 98 px.
+        // Centered at y=270: top = 270 - (98 / 2) = 221 px.
         FrameLayout.LayoutParams buttonParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-        );
+                FrameLayout.LayoutParams.WRAP_CONTENT);
         buttonParams.gravity = Gravity.CENTER_HORIZONTAL | Gravity.TOP;
-        buttonParams.topMargin = (int) (180 * scaleFactor);
+        buttonParams.topMargin = (int) (221 * scaleFactor);
         buttonContainer.setLayoutParams(buttonParams);
 
         boolean isSpanish = Locale.getDefault().getLanguage().equalsIgnoreCase("es");
-        String acceptText = isSpanish ? "Aceptar" : "Accept";
-        String denyText = isSpanish ? "Denegar" : "Deny";
+        String acceptText = isSpanish ? "Estoy de acuerdo." : "I agree.";
+        String denyText = isSpanish ? "Salir" : "Exit";
 
-        // Accept button triggers consecutive actions: notifications first if needed, then storage
+        // Accept button triggers consecutive actions: notifications first if needed,
+        // then storage
         View acceptButton = createChoiceButton(acceptText, () -> {
             playSfx(soundConfirmId, false);
             onAcceptClicked();
         });
 
+        // Deny button exits the application natively
         View denyButton = createChoiceButton(denyText, () -> {
             playSfx(soundConfirmId, false);
             exitApp();
         });
 
         LinearLayout.LayoutParams btnLayoutParam = (LinearLayout.LayoutParams) acceptButton.getLayoutParams();
-        btnLayoutParam.bottomMargin = (int) (14 * scaleFactor);
+        btnLayoutParam.bottomMargin = btnSpacing;
         acceptButton.setLayoutParams(btnLayoutParam);
 
         buttonContainer.addView(acceptButton);
         buttonContainer.addView(denyButton);
         rootLayout.addView(buttonContainer);
 
-        // 2. BOTTOM TEXTBOX CONTAINER (Strictly fixed width & height: 816x146 scaled)
+        // 2. BOTTOM TEXTBOX CONTAINER (Ren'Py gui.textbox: 816x146 px, yalign 0.99 ->
+        // 6px from bottom)
         int tbWidth = (int) (816 * scaleFactor);
         int tbHeight = (int) (146 * scaleFactor);
 
         FrameLayout textboxContainer = new FrameLayout(this);
         FrameLayout.LayoutParams tbContainerParams = new FrameLayout.LayoutParams(tbWidth, tbHeight);
         tbContainerParams.gravity = Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM;
-        tbContainerParams.bottomMargin = (int) (10 * scaleFactor);
+        tbContainerParams.bottomMargin = (int) (6 * scaleFactor);
         textboxContainer.setLayoutParams(tbContainerParams);
+
+        textboxContainer.setClipChildren(false);
+        textboxContainer.setClipToPadding(false);
 
         // Textbox background image
         ImageView textboxBg = new ImageView(this);
@@ -378,43 +463,66 @@ public class PermissionGateActivity extends Activity {
         }
         textboxBg.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-        ));
+                FrameLayout.LayoutParams.MATCH_PARENT));
         textboxContainer.addView(textboxBg);
 
-        // Dialogue text inside textbox
-        dialogueTextView = new TextView(this);
-        if (monikaTypeface != null) {
+        // Dialogue text inside textbox (DDLC style: 24px Aller_Rg font, white fill with
+        // black outline)
+        OutlineTextView otv = new OutlineTextView(this);
+        otv.setStrokeColor(Color.BLACK);
+        // Ren'Py outlines [(2, "#000000aa", 0, 0)] -> Under FILL, strokeWidth of 3.5f *
+        // scaleFactor
+        // produces ~1.75f - 2.0f outer border, perfectly matching Ren'Py's crisp
+        // outline!
+        otv.setStrokeWidth(3.5f * scaleFactor, scaleFactor);
+        dialogueTextView = otv;
+        if (monikaTypeface != null)
             dialogueTextView.setTypeface(monikaTypeface);
-        }
-        dialogueTextView.setTextColor(COLOR_TEXTBOX_TEXT);
-        dialogueTextView.setTextSize(TypedValue.COMPLEX_UNIT_PX, 22.0f * scaleFactor);
-        dialogueTextView.setLineSpacing(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 3, dm), 1.0f);
-        dialogueTextView.setShadowLayer(3.0f, 1.0f, 1.0f, Color.parseColor("#000000"));
+        dialogueTextView.setTextColor(COLOR_TEXTBOX_TEXT); // White
+        dialogueTextView.setTextSize(TypedValue.COMPLEX_UNIT_PX, 24.0f * scaleFactor); // gui.text_size = 24
+        dialogueTextView.setLineSpacing(1.0f * scaleFactor, 1.0f); // Ren'Py line_spacing 1
         dialogueTextView.setGravity(Gravity.TOP | Gravity.START);
         dialogueTextView.setMaxLines(4);
 
-        // Inner margins for the dialogue text inside the box
-        FrameLayout.LayoutParams tvParams = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-        );
-        tvParams.leftMargin = (int) (38 * scaleFactor);
-        tvParams.rightMargin = (int) (38 * scaleFactor);
-        tvParams.topMargin = (int) (18 * scaleFactor);
-        tvParams.bottomMargin = (int) (14 * scaleFactor);
+        // Ren'Py TeX Knuth-Plass paragraph line-breaking algorithm
+        // (BREAK_STRATEGY_HIGH_QUALITY)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            dialogueTextView.setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY);
+            dialogueTextView.setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE);
+        }
+
+        // Exact Ren'Py coordinates: leftMargin 31*s + padH 5*s = 36*scaleFactor (xpos
+        // 268-232=36)
+        // topMargin 23*s + padV 2*s = 25*scaleFactor (raised 1px from 26px to match
+        // overlay)
+        // effective width: (744 + 10)*s - 10*s = 744*scaleFactor (exact gui.text_width)
+        int textContainerWidth = (int) Math.round((744.0f + 10.0f) * scaleFactor);
+        int textContainerHeight = (int) Math.round(115.0f * scaleFactor);
+        FrameLayout.LayoutParams tvParams = new FrameLayout.LayoutParams(textContainerWidth, textContainerHeight);
+        tvParams.leftMargin = (int) Math.round(33.0f * scaleFactor);
+        tvParams.topMargin = (int) Math.round(25.0f * scaleFactor);
         dialogueTextView.setLayoutParams(tvParams);
 
         textboxContainer.addView(dialogueTextView);
         rootLayout.addView(textboxContainer);
 
+        // Tap anywhere on canvas or textbox to immediately complete typewriter
+        // animation
+        View.OnClickListener skipTypewriter = v -> completeTypewriterImmediately();
+        rootLayout.setOnClickListener(skipTypewriter);
+        textboxContainer.setOnClickListener(skipTypewriter);
+        dialogueTextView.setOnClickListener(skipTypewriter);
+
         setContentView(rootLayout);
 
-        // 3. DIALOGUE TEXT (Strictly accent-free to prevent missing character gaps with ASCII fonts)
+        // 3. DIALOGUE TEXT (Formatted with DDLC disclaimer/agreement formula from
+        // splash.rpy:L196)
+        // Strictly accent-free to ensure 100% rendering safety with custom ASCII DDLC
+        // fonts
         if (isSpanish) {
-            fullDialogueText = "Monika After Story requiere permisos de almacenamiento para gestionar tus partidas, regalos y submods en la memoria externa. Sin este permiso, la aplicacion no puede iniciar.";
+            fullDialogueText = "Al jugar Monika After Story, aceptas otorgar los permisos de almacenamiento necesarios para gestionar tus partidas, regalos\ny submods en la memoria externa.";
         } else {
-            fullDialogueText = "Monika After Story requires storage permissions to manage your save data, gifts, and submods in external storage. Without this permission, the application cannot start.";
+            fullDialogueText = "By playing Monika After Story, you agree to grant storage permissions to manage your save data, gifts, and submods in external storage.";
         }
 
         startTypewriterEffect();
@@ -426,74 +534,112 @@ public class PermissionGateActivity extends Activity {
 
         TextView button = new TextView(this);
         button.setText(text);
-        if (monikaTypeface != null) {
+        if (monikaTypeface != null)
             button.setTypeface(monikaTypeface);
-        }
         button.setTextColor(COLOR_CHOICE_IDLE);
-        button.setTextSize(TypedValue.COMPLEX_UNIT_PX, 18.0f * scaleFactor);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_PX, 24.0f * scaleFactor);
         button.setGravity(Gravity.CENTER);
 
         if (drawableChoiceIdle != null) {
             button.setBackground(drawableChoiceIdle.getConstantState().newDrawable());
         }
 
-        int btnWidth = (int) (400 * scaleFactor);
-        int btnHeight = (int) (42 * scaleFactor);
+        int btnWidth = (int) (420 * scaleFactor);
+        int btnHeight = (int) (38 * scaleFactor);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(btnWidth, btnHeight);
         button.setLayoutParams(lp);
 
-        button.setOnTouchListener((v, event) -> {
-            float x = event.getX();
-            float y = event.getY();
-            boolean isInside = (x >= 0 && x <= v.getWidth() && y >= 0 && y <= v.getHeight());
-
-            switch (event.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    playSfx(soundHoverId, true);
-                    if (drawableChoiceHover != null) {
-                        button.setBackground(drawableChoiceHover.getConstantState().newDrawable());
-                    }
-                    button.setTextColor(COLOR_CHOICE_HOVER);
-                    break;
-
-                case MotionEvent.ACTION_MOVE:
-                    if (isInside) {
-                        if (drawableChoiceHover != null) {
-                            button.setBackground(drawableChoiceHover.getConstantState().newDrawable());
-                        }
-                        button.setTextColor(COLOR_CHOICE_HOVER);
-                    } else {
-                        if (drawableChoiceIdle != null) {
-                            button.setBackground(drawableChoiceIdle.getConstantState().newDrawable());
-                        }
-                        button.setTextColor(COLOR_CHOICE_IDLE);
-                    }
-                    break;
-
-                case MotionEvent.ACTION_UP:
-                    if (drawableChoiceIdle != null) {
-                        button.setBackground(drawableChoiceIdle.getConstantState().newDrawable());
-                    }
-                    button.setTextColor(COLOR_CHOICE_IDLE);
-                    if (isInside) {
-                        v.performClick();
-                        if (onClick != null) {
-                            onClick.run();
-                        }
-                    }
-                    break;
-
-                case MotionEvent.ACTION_CANCEL:
-                    if (drawableChoiceIdle != null) {
-                        button.setBackground(drawableChoiceIdle.getConstantState().newDrawable());
-                    }
-                    button.setTextColor(COLOR_CHOICE_IDLE);
-                    break;
-            }
-            return true;
-        });
+        ChoiceButtonHolder holder = new ChoiceButtonHolder(button, onClick);
+        choiceButtonHolders.add(holder);
 
         return button;
+    }
+
+    /**
+     * Emulates continuous mouse-cursor tracking across the entire screen (Ren'Py /
+     * desktop behavior).
+     * Having the finger pressed anywhere on the screen corresponds to the cursor.
+     * Moving the finger over any choice button activates its hover state and sound.
+     * Releasing the finger confirms the button, and lifting the finger leaves no
+     * active cursor.
+     */
+    private boolean handleScreenTouch(MotionEvent event) {
+        float rawX = event.getRawX();
+        float rawY = event.getRawY();
+
+        ChoiceButtonHolder target = null;
+        int[] loc = new int[2];
+        for (ChoiceButtonHolder holder : choiceButtonHolders) {
+            holder.view.getLocationOnScreen(loc);
+            int left = loc[0];
+            int top = loc[1];
+            int right = left + holder.view.getWidth();
+            int bottom = top + holder.view.getHeight();
+            if (rawX >= left && rawX <= right && rawY >= top && rawY <= bottom) {
+                target = holder;
+                break;
+            }
+        }
+
+        int action = event.getActionMasked();
+        switch (action) {
+            case MotionEvent.ACTION_DOWN:
+                touchDownX = rawX;
+                touchDownY = rawY;
+                touchDownTime = System.currentTimeMillis();
+                if (target != null) {
+                    target.setHovered(true, drawableChoiceIdle, drawableChoiceHover, COLOR_CHOICE_IDLE,
+                            COLOR_CHOICE_HOVER);
+                    playSfx(soundHoverId, true);
+                    currentlyHoveredHolder = target;
+                } else {
+                    currentlyHoveredHolder = null;
+                }
+                break;
+
+            case MotionEvent.ACTION_MOVE:
+                if (target != currentlyHoveredHolder) {
+                    if (currentlyHoveredHolder != null) {
+                        currentlyHoveredHolder.setHovered(false, drawableChoiceIdle, drawableChoiceHover,
+                                COLOR_CHOICE_IDLE, COLOR_CHOICE_HOVER);
+                    }
+                    if (target != null) {
+                        target.setHovered(true, drawableChoiceIdle, drawableChoiceHover, COLOR_CHOICE_IDLE,
+                                COLOR_CHOICE_HOVER);
+                        playSfx(soundHoverId, true);
+                    }
+                    currentlyHoveredHolder = target;
+                }
+                break;
+
+            case MotionEvent.ACTION_UP:
+                if (currentlyHoveredHolder != null) {
+                    ChoiceButtonHolder clicked = currentlyHoveredHolder;
+                    currentlyHoveredHolder.setHovered(false, drawableChoiceIdle, drawableChoiceHover, COLOR_CHOICE_IDLE,
+                            COLOR_CHOICE_HOVER);
+                    currentlyHoveredHolder = null;
+                    if (clicked.action != null) {
+                        clicked.action.run();
+                    }
+                } else {
+                    // Tap on empty space or textbox completes typewriter text immediately
+                    long duration = System.currentTimeMillis() - touchDownTime;
+                    float dist = (float) Math.hypot(rawX - touchDownX, rawY - touchDownY);
+                    if (duration < 400 && dist < 30) {
+                        completeTypewriterImmediately();
+                    }
+                }
+                break;
+
+            case MotionEvent.ACTION_CANCEL:
+                if (currentlyHoveredHolder != null) {
+                    currentlyHoveredHolder.setHovered(false, drawableChoiceIdle, drawableChoiceHover, COLOR_CHOICE_IDLE,
+                            COLOR_CHOICE_HOVER);
+                    currentlyHoveredHolder = null;
+                }
+                break;
+        }
+        return true;
     }
 
     private void startTypewriterEffect() {
@@ -524,21 +670,21 @@ public class PermissionGateActivity extends Activity {
             int writePerm = checkCallingOrSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE);
             int readPerm = checkCallingOrSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE);
             return (writePerm == PackageManager.PERMISSION_GRANTED) &&
-                   (readPerm == PackageManager.PERMISSION_GRANTED);
+                    (readPerm == PackageManager.PERMISSION_GRANTED);
         }
     }
 
     private boolean needsNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            return checkCallingOrSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED;
+            return checkCallingOrSelfPermission(
+                    Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED;
         }
         return false;
     }
 
     private void requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requestPermissions(new String[]{
+            requestPermissions(new String[] {
                     Manifest.permission.POST_NOTIFICATIONS
             }, REQUEST_CODE_POST_NOTIFICATIONS);
         }
@@ -553,15 +699,19 @@ public class PermissionGateActivity extends Activity {
     }
 
     /**
-     * Executes consecutive permission requests when the user taps "Aceptar".
-     * Notification permission is requested first (if needed on Android 13+),
-     * and as soon as it completes, storage permission is immediately requested.
+     * Executes superimposed permission requests when the user taps "Aceptar" / "Estoy de acuerdo".
+     * Replicates the exact behavior found in the Ren'Py 7.8.4 port (zz_android.rpy):
+     * 1. Storage access request is triggered first (opens system settings on Android 11+).
+     * 2. Notification runtime permission (Android 13+) is requested immediately without waiting,
+     *    causing the notification permission dialog to pop up superimposed right on top of Settings.
      */
     private void onAcceptClicked() {
+        // 1. Storage permission request
+        requestStoragePermission();
+
+        // 2. Immediate superimposed Notification permission request (Android 13+)
         if (needsNotificationPermission()) {
             requestNotificationPermission();
-        } else {
-            requestStoragePermission();
         }
     }
 
@@ -583,7 +733,7 @@ public class PermissionGateActivity extends Activity {
                 startActivityForResult(fallback, REQUEST_CODE_MANAGE_STORAGE);
             }
         } else {
-            requestPermissions(new String[]{
+            requestPermissions(new String[] {
                     Manifest.permission.WRITE_EXTERNAL_STORAGE,
                     Manifest.permission.READ_EXTERNAL_STORAGE
             }, REQUEST_CODE_LEGACY_PERMISSIONS);
@@ -595,9 +745,7 @@ public class PermissionGateActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
         if (requestCode == REQUEST_CODE_POST_NOTIFICATIONS) {
-            if (!hasStoragePermission()) {
-                requestStoragePermission();
-            } else {
+            if (hasStoragePermission()) {
                 createExternalStorageDirectories();
                 launchPythonSDLActivity();
             }
@@ -646,7 +794,7 @@ public class PermissionGateActivity extends Activity {
             }
 
             // Comprehensive directory structure for Monika After Story
-            String[] dirsToCreate = new String[]{
+            String[] dirsToCreate = new String[] {
                     "",
                     "characters",
                     "chess_games",
@@ -691,8 +839,111 @@ public class PermissionGateActivity extends Activity {
         }
     }
 
+    /**
+     * Custom TextView that renders text with a stroke/outline matching DDLC
+     * dialogue style:
+     * crisp white fill with a solid black outline around each glyph.
+     * Overrides invalidate/requestLayout while isDrawing=true to prevent recursive
+     * loops
+     * when switching text colors between stroke and fill passes.
+     */
+    public static class OutlineTextView extends TextView {
+        private int strokeColor = Color.BLACK;
+        private float strokeWidth = 3.5f;
+
+        public OutlineTextView(Context context) {
+            super(context);
+        }
+
+        public void setStrokeColor(int color) {
+            this.strokeColor = color;
+            invalidate();
+        }
+
+        public void setStrokeWidth(float width, float scaleFactor) {
+            this.strokeWidth = width;
+            int padH = (int) Math.round(5.0f * scaleFactor);
+            int padV = (int) Math.round(2.0f * scaleFactor);
+            setPadding(padH, padV, padH, padV);
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            Layout layout = getLayout();
+            if (layout != null && strokeWidth > 0) {
+                canvas.save();
+                canvas.translate(getPaddingLeft(), getPaddingTop());
+
+                TextPaint paint = getPaint();
+                paint.setAntiAlias(true);
+                paint.setSubpixelText(true);
+                int originalColor = getCurrentTextColor();
+
+                // 1. Draw solid black outline directly on Layout (no clipRect restriction)
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeJoin(Paint.Join.ROUND);
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                paint.setStrokeWidth(strokeWidth);
+                paint.setColor(strokeColor);
+                layout.draw(canvas);
+
+                // 2. Draw crisp white text fill
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(originalColor);
+                layout.draw(canvas);
+
+                canvas.restore();
+            } else {
+                super.onDraw(canvas);
+            }
+        }
+    }
+
+    private void completeTypewriterImmediately() {
+        if (typewriterHandler != null && typewriterRunnable != null) {
+            typewriterHandler.removeCallbacks(typewriterRunnable);
+        }
+        if (dialogueTextView != null && fullDialogueText != null) {
+            dialogueTextView.setText(fullDialogueText);
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        exitApp();
+    }
+
     private void exitApp() {
-        finishAffinity();
-        System.exit(0);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                try {
+                    ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+                    if (am != null) {
+                        List<ActivityManager.AppTask> appTasks = am.getAppTasks();
+                        if (appTasks != null) {
+                            for (ActivityManager.AppTask appTask : appTasks) {
+                                appTask.finishAndRemoveTask();
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+                finishAndRemoveTask();
+            } else {
+                finishAffinity();
+            }
+        } catch (Exception e) {
+            finishAffinity();
+        }
+
+        // Allow system_server to cleanly remove the task from Multitasking/Recents before terminating VM
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                android.os.Process.killProcess(android.os.Process.myPid());
+                System.exit(0);
+            }
+        }, 150);
     }
 }
