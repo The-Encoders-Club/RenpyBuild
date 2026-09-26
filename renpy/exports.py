@@ -2215,8 +2215,6 @@ def load_module(name, **kwargs):
     renpy.game.contexts.pop()
 
     renpy.config.locked = old_locked
-
-
 def load_string(s, filename="<string>"):
     """
     :doc: other

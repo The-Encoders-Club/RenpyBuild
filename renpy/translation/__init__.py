@@ -638,4 +638,12 @@ def known_languages():
     language, None.
     """
 
-    return { i for i in renpy.game.script.translator.languages if i is not None }  # @UndefinedVariable
+    rv = { i for i in renpy.game.script.translator.languages if i is not None }  # @UndefinedVariable
+
+    if hasattr(renpy.game, "script") and renpy.game.script is not None:
+        for fn, dir in getattr(renpy.game.script, "script_files", []):
+            parts = fn.replace("\\", "/").split("/")
+            if parts[0] == "tl" and len(parts) > 2 and parts[1] != "None":
+                rv.add(parts[1])
+
+    return rv

@@ -212,7 +212,14 @@ def report_exception(e, editor=True):
 
     print(file=full)
     try:
-        print(platform.platform(), file=full)
+        if getattr(renpy, "android", False):
+            print("Android", file=full)
+        else:
+            print(platform.platform(), file=full)
+        if getattr(renpy, "android", False):
+            print("Android", file=full)
+        else:
+            print(platform.platform(), file=full)
         print(renpy.version, file=full)
         print(safe_utf8(renpy.config.name + " " + renpy.config.version), file=full)
     except:
