@@ -276,13 +276,21 @@ def main():
         renpy.config.commondir = None
 
     if renpy.android:
-        public_base = os.environ.get("ANDROID_OLD_PUBLIC", "")
+        public_base = os.environ.get("ANDROID_PUBLIC_MOD") or os.environ.get("ANDROID_OLD_PUBLIC") or os.environ.get("ANDROID_PUBLIC", "")
         public_gamedir = os.path.join(public_base, "game") if public_base else None
         if public_gamedir and os.path.isdir(public_gamedir):
             renpy.config.searchpath = [ public_gamedir, renpy.config.gamedir ]
         else:
             renpy.config.searchpath = [ renpy.config.gamedir ]
         renpy.config.commondir = None
+
+        # Add parent of cachedir to searchpath so renpy.loader.load("cache/...") finds files in native Android cache
+        if getattr(renpy.config, "cachedir", None):
+            cache_parent = os.path.dirname(renpy.config.cachedir)
+            cache_folder = os.path.basename(renpy.config.cachedir)
+            if cache_folder == "cache" and cache_parent not in renpy.config.searchpath:
+                renpy.config.searchpath.append(cache_parent)
+
 
     # Load Ren'Py extensions.
     for dir in renpy.config.searchpath:  # @ReservedAssignment

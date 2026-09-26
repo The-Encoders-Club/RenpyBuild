@@ -45,7 +45,11 @@ def get_path(fn):
     This always returns a path, but the path may or may not be writable.
     """
 
-    fn = os.path.join(renpy.config.gamedir, fn)
+    if fn.startswith("cache/") and getattr(renpy.config, "cachedir", None):
+        fn = os.path.join(renpy.config.cachedir, fn[6:])
+    else:
+        fn = os.path.join(renpy.config.gamedir, fn)
+
     dn = os.path.dirname(fn)
 
     try:
@@ -214,21 +218,26 @@ def scandirfiles():
     common_files.
     """
 
-    seen = set()
+    seen = { }
 
     def add(dn, fn):
-        if fn in seen:
-            return
-
         if fn.startswith("cache/"):
             return
 
         if fn.startswith("saves/"):
             return
 
-        files.append((dn, fn))
+        if fn in seen:
+            old_files, idx, old_dn = seen[fn]
+            if old_dn is None and dn is not None:
+                # Direct filesystem path overrides APK / archive entry
+                old_files[idx] = (dn, fn)
+                seen[fn] = (old_files, idx, dn)
+            return
 
-        seen.add(fn)
+        idx = len(files)
+        files.append((dn, fn))
+        seen[fn] = (files, idx, dn)
 
     for apk in apks:
 
@@ -455,6 +464,14 @@ def load_core(name):
         if rv is not None:
             return rv
 
+    # Look for the file directly on the filesystem first.
+    if not renpy.config.force_archives:
+        try:
+            fn = transfn(name)
+            return open_file(fn, "rb")
+        except:
+            pass
+
     # Look for the file in the apk.
     for apk in apks:
         prefixed_name = "/".join("x-" + i for i in name.split("/"))
@@ -462,14 +479,6 @@ def load_core(name):
         try:
             return apk.open(prefixed_name)
         except IOError:
-            pass
-
-    # Look for the file directly.
-    if not renpy.config.force_archives:
-        try:
-            fn = transfn(name)
-            return open_file(fn, "rb")
-        except:
             pass
 
     # Look for it in archive files.

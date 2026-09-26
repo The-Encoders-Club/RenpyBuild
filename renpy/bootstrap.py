@@ -324,15 +324,24 @@ You may be using a system install of python. Please run {0}.sh,
                 renpy.game.args = args
                 renpy.config.renpy_base = renpy_base
                 if renpy.android:
-                    public_base = os.environ.get('ANDROID_OLD_PUBLIC', '')
+                    public_base = os.environ.get('ANDROID_PUBLIC_MOD') or os.environ.get('ANDROID_OLD_PUBLIC', '')
                     if public_base:
                         renpy.config.basedir = public_base
                     else:
                         renpy.config.basedir = basedir
-                    renpy.config.logdir = os.environ.get('ANDROID_OLD_PUBLIC', os.environ.get('ANDROID_PUBLIC', basedir))
+                    renpy.config.logdir = os.environ.get('ANDROID_PUBLIC_MOD', os.environ.get('ANDROID_OLD_PUBLIC', os.environ.get('ANDROID_PUBLIC', basedir)))
+                    android_private = os.environ.get('ANDROID_PRIVATE', '')
+                    if android_private:
+                        # Direct to Android OS native cache directory: /data/data/<pkg>/cache
+                        # Clearing cache from Android Settings -> App -> Clear Cache will instantly clear this!
+                        app_cache = os.path.join(os.path.dirname(android_private), 'cache')
+                    else:
+                        app_cache = os.path.join(gamedir, 'cache')
+                    renpy.config.cachedir = app_cache
                 else:
                     renpy.config.basedir = basedir
                     renpy.config.logdir = basedir
+                    renpy.config.cachedir = os.path.join(gamedir, 'cache')
                 renpy.config.gamedir = gamedir
                 renpy.config.args = [ ]
 

@@ -124,6 +124,11 @@ archives = [ ]
 # Searchpath.
 searchpath = [ ]
 
+# Path to the cache directory (where bytecode.rpyb, pyanalysis.rpyb, screens.rpyb are stored).
+# If None, defaults to os.path.join(gamedir, "cache").
+# On Android, can point directly to the native Android app cache (/data/data/<pkg>/cache).
+cachedir = None
+
 # If True, we will only try loading from archives.
 # Only useful for debugging Ren'Py, don't document.
 force_archives = False
