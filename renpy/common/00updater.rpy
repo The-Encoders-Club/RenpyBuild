@@ -24,25 +24,30 @@ init -1500 python in updater:
     from store import renpy, config, Action, DictEquality, persistent
     import store.build as build
 
-    import tarfile
-    import threading
-    import traceback
     import os
-    import urlparse
-    import urllib
-    import json
-    import subprocess
-    import hashlib
     import time
     import sys
+    import threading
+    import traceback
+    import hashlib
     import struct
     import zlib
     import codecs
     import StringIO
 
-    try:
-        import rsa
-    except:
+    if not renpy.android:
+        import tarfile
+        import urlparse
+        import urllib
+        import json
+        import subprocess
+
+        try:
+            import rsa
+        except:
+            rsa = None
+    else:
+        tarfile = urlparse = urllib = json = subprocess = None
         rsa = None
 
     from renpy.exports import fsencode

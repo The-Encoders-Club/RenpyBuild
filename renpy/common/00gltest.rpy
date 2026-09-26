@@ -1,4 +1,4 @@
-﻿# Copyright 2004-2017 Tom Rothamel <pytom@bishoujo.us>
+# Copyright 2004-2017 Tom Rothamel <pytom@bishoujo.us>
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation files
@@ -293,8 +293,10 @@ init -1500 python:
         if not _preferences.performance_test and "RENPY_PERFORMANCE_TEST" not in os.environ:
             return
 
-        # Don't bother on android or ios - there's nothing the user can do.
+        # Don't bother on android or ios with benchmarks, but do start displaying the interface
         if renpy.mobile:
+            ui.pausebehavior(0)
+            ui.interact(suppress_underlay=True, suppress_overlay=True)
             return
 
         renpy.renpy.display.log.write("Performance test:")
