@@ -74,6 +74,43 @@ def collapse_stmts(stmts):
     return rv
 
 
+def get_cpu_count():
+    try:
+        if hasattr(os, "sysconf"):
+            if "SC_NPROCESSORS_ONLN" in os.sysconf_names:
+                n = os.sysconf("SC_NPROCESSORS_ONLN")
+                if isinstance(n, (int, long)) and n > 0:
+                    return n
+    except:
+        pass
+
+    try:
+        with open("/sys/devices/system/cpu/online", "r") as f:
+            line = f.read().strip()
+            if "-" in line:
+                parts = line.split("-")
+                return int(parts[1]) - int(parts[0]) + 1
+    except:
+        pass
+
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            count = sum(1 for line in f if line.startswith("processor"))
+            if count > 0:
+                return count
+    except:
+        pass
+
+    try:
+        n = os.environ.get("NUMBER_OF_PROCESSORS")
+        if n:
+            return int(n)
+    except:
+        pass
+
+    return 4
+
+
 class Script(object):
     """
     This class represents a Ren'Py script, which is parsed out of a
@@ -252,6 +289,123 @@ class Script(object):
             if (fn, dir) not in target:
                 target.append((fn, dir))
 
+    def load_monolithic_script(self, initcode, game_scripts):
+        """
+        Attempts to load game scripts from a unified monolithic script bundle (script.rpyb).
+        Common core scripts (00*.rpyc) are loaded beforehand to ensure all namespaces and stores are ready.
+        Returns True if the bundle was loaded and initialized successfully, False otherwise.
+        """
+        if getattr(renpy.game.args, "compile", False):
+            return False
+
+        bundle_file = None
+        for candidate in ("script.rpyb", "cache/script.rpyb"):
+            try:
+                if renpy.loader.loadable(candidate):
+                    bundle_file = renpy.loader.load(candidate)
+                    break
+            except Exception:
+                pass
+
+        if bundle_file is None:
+            return False
+
+        t0 = time.time()
+
+        # Save snapshot of state in case of rollback
+        old_namemap = dict(self.namemap)
+        old_initcode_len = len(initcode)
+        old_digest = self.digest.copy() if hasattr(self.digest, 'copy') else None
+
+        try:
+            raw_data = bundle_file.read()
+            bundle_file.close()
+
+            t_decomp_start = time.time()
+            uncompressed = zlib.decompress(raw_data)
+            t_decomp = time.time() - t_decomp_start
+
+            t_bun_load_start = time.time()
+            bundle = loads(uncompressed)
+            t_bun_load = time.time() - t_bun_load_start
+
+            if not isinstance(bundle, dict) or "files" not in bundle:
+                return False
+
+            # Preload all 7,124 precompiled Python bytecodes into cache
+            t_bc_inject = 0.0
+            if "bytecode_raw" in bundle and bundle["bytecode_raw"]:
+                try:
+                    t_bc_start = time.time()
+                    ver, bcache = loads(bundle["bytecode_raw"].decode("zlib"))
+                    if ver == BYTECODE_VERSION:
+                        self.bytecode_oldcache = bcache
+                        t_bc_inject = time.time() - t_bc_start
+                except Exception:
+                    pass
+
+            records = bundle["files"]
+            loaded_files = set()
+            success_count = 0
+
+            t_loads_sum = 0.0
+            t_finish_sum = 0.0
+
+            for fn, bindata, digest, slot in records:
+                try:
+                    t_l0 = time.time()
+                    data, stmts = loads(bindata)
+                    t_loads_sum += (time.time() - t_l0)
+
+                    if not data or not isinstance(data, dict):
+                        continue
+
+                    if data.get('version') != script_version:
+                            raise ValueError("Version mismatch")
+
+                    if self.key and data.get('key', 'unlocked') != self.key:
+                        continue
+
+                    if self.key is None:
+                        self.key = data.get('key')
+
+                    if slot < 2:
+                        self.static_transforms(stmts)
+
+                    source = ".rpy"
+                    t_f0 = time.time()
+                    self.finish_load(stmts, initcode, filename=fn + source)
+                    t_finish_sum += (time.time() - t_f0)
+
+                    if digest:
+                        self.digest.update(digest)
+
+                    loaded_files.add(fn)
+                    success_count += 1
+                except Exception as e:
+                    import traceback
+                    renpy.exports.write_log("Monolithic error loading %s: %s\n%s", fn, str(e), traceback.format_exc())
+                    raise
+
+
+            # Check for any dynamic / external scripts not in the bundle (e.g. Submods)
+            remaining_scripts = [ (fn, dir) for (fn, dir) in game_scripts if fn not in loaded_files ]
+            if remaining_scripts:
+                for fn, dir in remaining_scripts:
+                    self.load_appropriate_file(".rpyc", ".rpy", dir, fn, initcode)
+
+            return True
+
+        except Exception as e:
+            import traceback
+            renpy.exports.write_log("Monolithic script load failed: %s\n%s. Rolling back state.", str(e), traceback.format_exc())
+            # Clean rollback
+            self.namemap = old_namemap
+            del initcode[old_initcode_len:]
+            if old_digest:
+                self.digest = old_digest
+            return False
+
     def load_script(self):
 
         script_files = self.script_files
@@ -261,8 +415,183 @@ class Script(object):
 
         initcode = [ ]
 
-        for fn, dir in script_files:  # @ReservedAssignment
+        # 1. Load core Ren'Py common scripts first (00*.rpyc) to initialize core stores, ATL, namespaces
+        common_scripts = [ (fn, dir) for (fn, dir) in script_files if fn.startswith("00") ]
+        game_scripts = [ (fn, dir) for (fn, dir) in script_files if not fn.startswith("00") ]
+
+        for fn, dir in common_scripts:
             self.load_appropriate_file(".rpyc", ".rpy", dir, fn, initcode)
+
+        # 2. Load game scripts via ultra-fast monolithic bundle (<0.8s target)
+        if self.load_monolithic_script(initcode, game_scripts):
+            pass
+
+        # Multithreaded decompression pipeline on Android fallback for game scripts.
+        elif renpy.android:
+            import threading
+
+            t_pipeline_start = time.time()
+            num_threads = max(2, get_cpu_count())
+            total_files = len(game_scripts)
+
+            renpy.exports.write_log("=== MULTITHREAD PIPELINE START ===")
+            renpy.exports.write_log("Cores detected: %d, Total game script files: %d", num_threads, total_files)
+
+            results = [ None ] * total_files
+            events = [ threading.Event() for _ in range(total_files) ]
+
+            work_queue = list(enumerate(game_scripts))
+            work_queue.reverse()
+            queue_lock = threading.Lock()
+            load_lock = threading.Lock()
+
+            def worker():
+                while True:
+                    queue_lock.acquire()
+                    if not work_queue:
+                        queue_lock.release()
+                        break
+                    idx, (fn, dir) = work_queue.pop()
+                    queue_lock.release()
+
+                    res = None
+                    try:
+                        f = None
+                        if dir is None:
+                            load_lock.acquire()
+                            try:
+                                f = renpy.loader.load(fn + ".rpyc")
+                            finally:
+                                load_lock.release()
+                        else:
+                            rpyfn = dir + "/" + fn + ".rpy"
+                            rpycfn = dir + "/" + fn + ".rpyc"
+                            if os.path.exists(rpyfn):
+                                if not os.path.exists(rpycfn) or renpy.game.args.compile:
+                                    f = None
+                                else:
+                                    with open(rpyfn, "rU") as rpyf:
+                                        rpydigest = hashlib.md5(rpyf.read()).digest()
+                                    with open(rpycfn, "rb") as cf:
+                                        cf.seek(-hashlib.md5().digest_size, 2)
+                                        rpycdigest = cf.read(hashlib.md5().digest_size)
+                                    if rpydigest == rpycdigest:
+                                        f = open(rpycfn, "rb")
+                                    else:
+                                        f = None
+                            elif os.path.exists(rpycfn):
+                                f = open(rpycfn, "rb")
+
+                        if f is not None:
+                            try:
+                                f.seek(-hashlib.md5().digest_size, 2)
+                                digest = f.read(hashlib.md5().digest_size)
+                                f.seek(0)
+                            except:
+                                digest = None
+
+                            for slot in (2, 1):
+                                try:
+                                    bindata = self.read_rpyc_data(f, slot)
+                                    if bindata:
+                                        res = (bindata, digest, slot)
+                                        break
+                                except:
+                                    pass
+                                f.seek(0)
+                            f.close()
+                    except Exception as e:
+                        import traceback
+                        res = ("__ERROR__", str(e), traceback.format_exc(), None)
+
+                    results[idx] = res
+                    events[idx].set()
+
+            threads = [ ]
+            for _ in range(num_threads):
+                t = threading.Thread(target=worker)
+                t.daemon = True
+                t.start()
+                threads.append(t)
+
+            t_wait_sum = 0.0
+            t_unpickle_sum = 0.0
+            t_finish_sum = 0.0
+            success_count = 0
+            fallback_count = 0
+
+            for idx, (fn, dir) in enumerate(game_scripts):
+                t0 = time.time()
+                events[idx].wait()
+                t1 = time.time()
+                t_wait_sum += (t1 - t0)
+
+                res = results[idx]
+                results[idx] = None
+
+                loaded = False
+                fallback_reason = None
+
+                if res is not None and len(res) == 4 and res[0] == "__ERROR__":
+                    fallback_reason = "Worker Error: %s" % res[1]
+                elif res is not None:
+                    try:
+                        bindata, digest, slot = res
+                        tu0 = time.time()
+                        data, stmts = loads(bindata)
+                        tu1 = time.time()
+                        t_unpickle_sum += (tu1 - tu0)
+
+                        if not data or not isinstance(data, dict):
+                            fallback_reason = "Data not dict"
+                        elif data.get('version') != script_version:
+                            fallback_reason = "Version mismatch (got %s, expected %s)" % (data.get('version'), script_version)
+                        elif self.key and data.get('key', 'unlocked') != self.key:
+                            fallback_reason = "Key mismatch"
+                        else:
+                            if self.key is None:
+                                self.key = data['key']
+
+                            if slot < 2:
+                                self.static_transforms(stmts)
+
+                            tf0 = time.time()
+                            source = ".rpy"
+                            self.finish_load(stmts, initcode, filename=fn + source)
+                            if digest:
+                                self.digest.update(digest)
+
+                            if dir is not None:
+                                rpyfn = dir + "/" + fn + source
+                                self.backup_list.append((rpyfn, digest))
+
+                            tf1 = time.time()
+                            t_finish_sum += (tf1 - tf0)
+
+                            loaded = True
+                    except Exception as e:
+                        fallback_reason = "Main Thread Exception: %s" % str(e)
+                else:
+                    fallback_reason = "res is None"
+
+                if loaded:
+                    success_count += 1
+                else:
+                    fallback_count += 1
+                    renpy.exports.write_log("MULTITHREAD FALLBACK on %s: %s", fn, fallback_reason)
+                    self.load_appropriate_file(".rpyc", ".rpy", dir, fn, initcode)
+
+            for t in threads:
+                t.join()
+
+            t_total = time.time() - t_pipeline_start
+            renpy.exports.write_log("MULTITHREAD SUMMARY: total=%.3fs | wait=%.3fs | unpickle=%.3fs | finish_load=%.3fs | success=%d | fallback=%d",
+                                    t_total, t_wait_sum, t_unpickle_sum, t_finish_sum, success_count, fallback_count)
+            renpy.exports.write_log("=== MULTITHREAD PIPELINE END ===")
+
+        else:
+            for fn, dir in game_scripts:
+                self.load_appropriate_file(".rpyc", ".rpy", dir, fn, initcode)
 
         # Make the sort stable.
         initcode = [ (prio, index, code) for index, (prio, code) in
@@ -609,9 +938,18 @@ class Script(object):
             data = None
             stmts = None
 
-            f = renpy.loader.load(fn)
+            if dir is not None:
+                f = open(dir + "/" + fn, "rb")
+            else:
+                f = renpy.loader.load(fn)
 
             try:
+                try:
+                    f.seek(-hashlib.md5().digest_size, 2)
+                    self._last_digest = f.read(hashlib.md5().digest_size)
+                    f.seek(0)
+                except:
+                    self._last_digest = None
 
                 for slot in [ 2, 1 ]:
                     try:
@@ -666,10 +1004,12 @@ class Script(object):
             if data is None:
                 raise Exception("Could not load from archive %s." % (lastfn,))
 
-            f = renpy.loader.load(fn + compiled)
-            f.seek(-hashlib.md5().digest_size, 2)
-            digest = f.read(hashlib.md5().digest_size)
-            f.close()
+            digest = getattr(self, "_last_digest", None)
+            if digest is None:
+                f = renpy.loader.load(fn + compiled)
+                f.seek(-hashlib.md5().digest_size, 2)
+                digest = f.read(hashlib.md5().digest_size)
+                f.close()
 
         else:
 
