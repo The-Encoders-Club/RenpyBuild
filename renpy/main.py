@@ -386,6 +386,43 @@ def main():
                 sys.path.remove(p_lib)
             sys.path.insert(0, p_lib)
 
+        # Provide universal _replace_charref in html module for submods (e.g. mistune in Say Something)
+        try:
+            import html
+            if not hasattr(html, "_replace_charref"):
+                _invalid_charrefs = {
+                    0x00: u'\ufffd', 0x0d: u'\r', 0x80: u'\u20ac', 0x81: u'\x81', 0x82: u'\u201a',
+                    0x83: u'\u0192', 0x84: u'\u201e', 0x85: u'\u2026', 0x86: u'\u2020', 0x87: u'\u2021',
+                    0x88: u'\u02c6', 0x89: u'\u2030', 0x8a: u'\u0160', 0x8b: u'\u2039', 0x8c: u'\u0152',
+                    0x8d: u'\x8d', 0x8e: u'\u017d', 0x8f: u'\x8f', 0x90: u'\x90', 0x91: u'\u2018',
+                    0x92: u'\u2019', 0x93: u'\u201c', 0x94: u'\u201d', 0x95: u'\u2022', 0x96: u'\u2013',
+                    0x97: u'\u2014', 0x98: u'\u02dc', 0x99: u'\u2122', 0x9a: u'\u0161', 0x9b: u'\u203a',
+                    0x9c: u'\u0153', 0x9d: u'\x9d', 0x9e: u'\u017e', 0x9f: u'\u0178',
+                }
+                def _fallback_replace_charref(s):
+                    val = s.group(1)
+                    if val.startswith('#'):
+                        try:
+                            num = int(val[2:], 16) if len(val) > 1 and val[1] in 'xX' else int(val[1:])
+                            if num in _invalid_charrefs:
+                                return _invalid_charrefs[num]
+                            if 0xD800 <= num <= 0xDFFF or num > 0x10FFFF:
+                                return u'\uFFFD'
+                            return unichr(num)
+                        except Exception:
+                            return s.group(0)
+                    else:
+                        try:
+                            import htmlentitydefs
+                            if val in htmlentitydefs.name2codepoint:
+                                return unichr(htmlentitydefs.name2codepoint[val])
+                        except Exception:
+                            pass
+                        return u'&' + val
+                html._replace_charref = _fallback_replace_charref
+        except Exception:
+            pass
+
 
 
     # Load Ren'Py extensions.
