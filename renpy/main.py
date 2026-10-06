@@ -348,6 +348,13 @@ def main():
             if ghost in sys.modules:
                 del sys.modules[ghost]
 
+        # On Android, preload and protect native system ssl module before project packages can shadow it with PC dummy
+        if renpy.android:
+            try:
+                import ssl
+            except Exception:
+                pass
+
         # Ensure Root-level lib, MAS core python-packages, and Submod libraries have priority in sys.path
         project_lib_dirs = [ ]
 
@@ -385,6 +392,18 @@ def main():
             if p_lib in sys.path:
                 sys.path.remove(p_lib)
             sys.path.insert(0, p_lib)
+
+        # Ensure native ssl is active and has SSLContext on Android
+        if renpy.android:
+            try:
+                import ssl
+                if not hasattr(ssl, "SSLContext"):
+                    import imp
+                    native_lib = os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "lib", "python2.7")
+                    f_mod, p_mod, d_mod = imp.find_module("ssl", [native_lib])
+                    sys.modules["ssl"] = imp.load_module("ssl", f_mod, p_mod, d_mod)
+            except Exception:
+                pass
 
         # Provide universal _replace_charref in html module for submods (e.g. mistune in Say Something)
         try:
