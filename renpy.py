@@ -63,7 +63,7 @@ def path_to_saves(gamedir, save_directory=None):
 
     # Android.
     if renpy.android:
-        public_base = os.environ.get("ANDROID_OLD_PUBLIC", "")
+        public_base = os.environ.get("ANDROID_PUBLIC_MOD") or os.environ.get("ANDROID_OLD_PUBLIC", "")
         paths = [
             os.path.join(public_base, "game/saves"),
             os.path.join(public_base, "saves"),

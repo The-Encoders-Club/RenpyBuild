@@ -327,8 +327,15 @@ You may be using a system install of python. Please run {0}.sh,
                     public_base = os.environ.get('ANDROID_PUBLIC_MOD') or os.environ.get('ANDROID_OLD_PUBLIC', '')
                     if public_base:
                         renpy.config.basedir = public_base
+                        renpy.config.gamedir = os.path.join(public_base, 'game')
+                        if not os.path.exists(renpy.config.gamedir):
+                            try:
+                                os.makedirs(renpy.config.gamedir, 0o777)
+                            except Exception:
+                                pass
                     else:
                         renpy.config.basedir = basedir
+                        renpy.config.gamedir = gamedir
                     renpy.config.logdir = os.environ.get('ANDROID_PUBLIC_MOD', os.environ.get('ANDROID_OLD_PUBLIC', os.environ.get('ANDROID_PUBLIC', basedir)))
                     android_private = os.environ.get('ANDROID_PRIVATE', '')
                     if android_private:
@@ -336,13 +343,13 @@ You may be using a system install of python. Please run {0}.sh,
                         # Clearing cache from Android Settings -> App -> Clear Cache will instantly clear this!
                         app_cache = os.path.join(os.path.dirname(android_private), 'cache')
                     else:
-                        app_cache = os.path.join(gamedir, 'cache')
+                        app_cache = os.path.join(renpy.config.gamedir, 'cache')
                     renpy.config.cachedir = app_cache
                 else:
                     renpy.config.basedir = basedir
+                    renpy.config.gamedir = gamedir
                     renpy.config.logdir = basedir
                     renpy.config.cachedir = os.path.join(gamedir, 'cache')
-                renpy.config.gamedir = gamedir
                 renpy.config.args = [ ]
 
                 if not os.path.exists(renpy.config.logdir):

@@ -799,7 +799,6 @@ public class PermissionGateActivity extends Activity {
                     "characters",
                     "chess_games",
                     "log",
-                    "logs",
                     "custom_bgm",
                     "game",
                     "game/saves",
