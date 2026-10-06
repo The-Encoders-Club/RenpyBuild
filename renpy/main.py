@@ -174,6 +174,37 @@ def choose_variants():
         import math
         import pygame_sdl2 as pygame
 
+        # Transparent fallback wrapper for pygame.image.load to resolve via renpy.loader
+        # when submods request images that reside in the APK or have casing variances.
+        try:
+            _orig_pygame_image_load = pygame.image.load
+            def _safe_pygame_image_load(f, *args, **kwargs):
+                try:
+                    return _orig_pygame_image_load(f, *args, **kwargs)
+                except Exception:
+                    if isinstance(f, (str, unicode)):
+                        rel = f.replace("\\", "/")
+                        if getattr(renpy.config, "gamedir", None):
+                            gdir = renpy.config.gamedir.replace("\\", "/").rstrip("/") + "/"
+                            if rel.startswith(gdir):
+                                rel = rel[len(gdir):]
+                        if getattr(renpy.config, "basedir", None):
+                            bdir = renpy.config.basedir.replace("\\", "/").rstrip("/") + "/"
+                            if rel.startswith(bdir):
+                                rel = rel[len(bdir):]
+                        if rel.startswith("game/"):
+                            rel = rel[5:]
+                        try:
+                            if renpy.loader.loadable(rel):
+                                f_obj = renpy.loader.load(rel)
+                                return _orig_pygame_image_load(f_obj, *args, **kwargs)
+                        except Exception:
+                            pass
+                    raise
+            pygame.image.load = _safe_pygame_image_load
+        except Exception:
+            pass
+
         from jnius import autoclass  # @UnresolvedImport
 
         # Manufacturer/Model-specific variants.
@@ -278,10 +309,21 @@ def main():
     if renpy.android:
         public_base = os.environ.get("ANDROID_PUBLIC_MOD") or os.environ.get("ANDROID_OLD_PUBLIC") or os.environ.get("ANDROID_PUBLIC", "")
         public_gamedir = os.path.join(public_base, "game") if public_base else None
-        if public_gamedir and os.path.isdir(public_gamedir):
-            renpy.config.searchpath = [ public_gamedir, renpy.config.gamedir ]
-        else:
-            renpy.config.searchpath = [ renpy.config.gamedir ]
+        internal_gamedir = os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "game")
+
+        if public_gamedir:
+            renpy.config.gamedir = public_gamedir
+            game.basepath = public_gamedir
+            if not os.path.exists(public_gamedir):
+                try:
+                    os.makedirs(public_gamedir, 0o777)
+                except Exception:
+                    pass
+
+        searchpath = [ renpy.config.gamedir ]
+        if internal_gamedir and os.path.isdir(internal_gamedir) and internal_gamedir != renpy.config.gamedir:
+            searchpath.append(internal_gamedir)
+        renpy.config.searchpath = searchpath
         renpy.config.commondir = None
 
         # Add parent of cachedir to searchpath so renpy.loader.load("cache/...") finds files in native Android cache
@@ -291,23 +333,61 @@ def main():
             if cache_folder == "cache" and cache_parent not in renpy.config.searchpath:
                 renpy.config.searchpath.append(cache_parent)
 
+        # Clean incomplete Python 3 ghost shims from Android internal lib/python2.7 (e.g. html from future)
+        import shutil
+        internal_lib = os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "lib", "python2.7")
+        if os.path.isdir(internal_lib):
+            for ghost in ("html",):
+                ghost_path = os.path.join(internal_lib, ghost)
+                if os.path.isdir(ghost_path):
+                    try:
+                        shutil.rmtree(ghost_path)
+                    except Exception:
+                        pass
+        if "html" in sys.modules:
+            del sys.modules["html"]
+
+        # Ensure Submod bundled Python libraries have priority in sys.path over system fallbacks
+        submod_lib_dirs = [ ]
+        for sm_dir_name in ("Submods", "submods"):
+            sm_base = os.path.join(renpy.config.gamedir, sm_dir_name)
+            if os.path.isdir(sm_base):
+                try:
+                    for sm in os.listdir(sm_base):
+                        sm_path = os.path.join(sm_base, sm)
+                        if os.path.isdir(sm_path):
+                            for lib_cand in ("lib", "python-packages", "pythonlib"):
+                                candidate = os.path.join(sm_path, lib_cand)
+                                if os.path.isdir(candidate):
+                                    submod_lib_dirs.append(candidate)
+                except Exception:
+                    pass
+
+        for sm_lib in reversed(submod_lib_dirs):
+            if sm_lib in sys.path:
+                sys.path.remove(sm_lib)
+            sys.path.insert(0, sm_lib)
+
+
 
     # Load Ren'Py extensions.
     for dir in renpy.config.searchpath:  # @ReservedAssignment
-        for fn in os.listdir(dir):
-            if fn.lower().endswith(".rpe"):
-                load_rpe(dir + "/" + fn)
+        if os.path.isdir(dir):
+            for fn in os.listdir(dir):
+                if fn.lower().endswith(".rpe"):
+                    load_rpe(dir + "/" + fn)
 
     # The basename is the final component of the path to the gamedir.
-    for i in sorted(os.listdir(renpy.config.gamedir)):
+    if os.path.isdir(renpy.config.gamedir):
+        for i in sorted(os.listdir(renpy.config.gamedir)):
 
-        if not i.endswith(".rpa"):
-            continue
+            if not i.endswith(".rpa"):
+                continue
 
-        i = i[:-4]
-        renpy.config.archives.append(i)
+            i = i[:-4]
+            renpy.config.archives.append(i)
 
-    renpy.config.archives.reverse()
+        renpy.config.archives.reverse()
 
     # Initialize archives.
     renpy.loader.index_archives()
