@@ -333,22 +333,40 @@ def main():
             if cache_folder == "cache" and cache_parent not in renpy.config.searchpath:
                 renpy.config.searchpath.append(cache_parent)
 
-        # Clean incomplete Python 3 ghost shims from Android internal lib/python2.7 (e.g. html from future)
+        # Clean conflicting/incomplete shims from Android internal lib/python2.7 (e.g. html from future, system certifi)
         import shutil
         internal_lib = os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "lib", "python2.7")
         if os.path.isdir(internal_lib):
-            for ghost in ("html",):
+            for ghost in ("html", "certifi"):
                 ghost_path = os.path.join(internal_lib, ghost)
                 if os.path.isdir(ghost_path):
                     try:
                         shutil.rmtree(ghost_path)
                     except Exception:
                         pass
-        if "html" in sys.modules:
-            del sys.modules["html"]
+        for ghost in ("html", "certifi"):
+            if ghost in sys.modules:
+                del sys.modules[ghost]
 
-        # Ensure Submod bundled Python libraries have priority in sys.path over system fallbacks
-        submod_lib_dirs = [ ]
+        # Ensure Root-level lib, MAS core python-packages, and Submod libraries have priority in sys.path
+        project_lib_dirs = [ ]
+
+        # 1. Root-level lib folder (outside game/)
+        if getattr(renpy.config, "basedir", None):
+            root_lib = os.path.join(renpy.config.basedir, "lib")
+            if os.path.isdir(root_lib):
+                project_lib_dirs.append(root_lib)
+
+        # 2. MAS core python-packages
+        mas_py_pkgs = os.path.join(renpy.config.gamedir, "python-packages")
+        if os.path.isdir(mas_py_pkgs):
+            project_lib_dirs.append(mas_py_pkgs)
+        if internal_gamedir:
+            internal_py_pkgs = os.path.join(internal_gamedir, "python-packages")
+            if os.path.isdir(internal_py_pkgs):
+                project_lib_dirs.append(internal_py_pkgs)
+
+        # 3. Submod bundled Python libraries
         for sm_dir_name in ("Submods", "submods"):
             sm_base = os.path.join(renpy.config.gamedir, sm_dir_name)
             if os.path.isdir(sm_base):
@@ -359,14 +377,14 @@ def main():
                             for lib_cand in ("lib", "python-packages", "pythonlib"):
                                 candidate = os.path.join(sm_path, lib_cand)
                                 if os.path.isdir(candidate):
-                                    submod_lib_dirs.append(candidate)
+                                    project_lib_dirs.append(candidate)
                 except Exception:
                     pass
 
-        for sm_lib in reversed(submod_lib_dirs):
-            if sm_lib in sys.path:
-                sys.path.remove(sm_lib)
-            sys.path.insert(0, sm_lib)
+        for p_lib in reversed(project_lib_dirs):
+            if p_lib in sys.path:
+                sys.path.remove(p_lib)
+            sys.path.insert(0, p_lib)
 
 
 
@@ -391,6 +409,21 @@ def main():
 
     # Initialize archives.
     renpy.loader.index_archives()
+
+    if renpy.android:
+        # Guarantee physical cacert.pem on storage for native OpenSSL SSLContext
+        try:
+            cacert_target = os.path.join(renpy.config.gamedir, "python-packages", "certifi", "cacert.pem")
+            if not os.path.exists(cacert_target):
+                cacert_asset = "python-packages/certifi/cacert.pem"
+                if renpy.loader.loadable(cacert_asset):
+                    target_dir = os.path.dirname(cacert_target)
+                    if not os.path.exists(target_dir):
+                        os.makedirs(target_dir, 0o777)
+                    with open(cacert_target, "wb") as f:
+                        f.write(renpy.loader.load(cacert_asset).read())
+        except Exception:
+            pass
 
     # Start auto-loading.
     renpy.loader.auto_init()
