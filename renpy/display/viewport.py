@@ -22,6 +22,7 @@
 # This file contains classes that handle layout of displayables on
 # the screen.
 
+import math
 import renpy.display
 import pygame_sdl2 as pygame
 
@@ -36,7 +37,7 @@ def edgescroll_proportional(n):
 
 class Viewport(renpy.display.layout.Container):
 
-    __version__ = 5
+    __version__ = 6
 
     arrowkeys = False
 
@@ -72,6 +73,10 @@ class Viewport(renpy.display.layout.Container):
         if version < 5:
             self.focusable = self.draggable
 
+        if version < 6:
+            self.touch_start = None
+            self.touch_dragged = False
+
     def __init__(self,
                  child=None,
                  child_size=(None, None),
@@ -80,7 +85,7 @@ class Viewport(renpy.display.layout.Container):
                  yadjustment=None,
                  set_adjustments=True,
                  mousewheel=False,
-                 draggable=False,
+                 draggable=None,
                  edgescroll=None,
                  style='viewport',
                  xinitial=None,
@@ -110,10 +115,17 @@ class Viewport(renpy.display.layout.Container):
             self.xoffset = replaces.xoffset
             self.yoffset = replaces.yoffset
             self.drag_position = replaces.drag_position
+            self.touch_start = getattr(replaces, "touch_start", None)
+            self.touch_dragged = getattr(replaces, "touch_dragged", False)
         else:
             self.drag_position = None
+            self.touch_start = None
+            self.touch_dragged = False
 
         self.child_width, self.child_height = child_size
+
+        if draggable is None:
+            draggable = getattr(renpy, "android", False)
 
         self.mousewheel = mousewheel
         self.draggable = draggable
@@ -300,25 +312,55 @@ class Viewport(renpy.display.layout.Container):
         self.xoffset = None
         self.yoffset = None
 
+        if self.draggable:
+            # Touch motion drag detection: allow dragging anywhere, including over textbuttons
+            if ev.type == pygame.MOUSEBUTTONDOWN and getattr(ev, "button", None) == 1:
+                if (0 <= x < self.width) and (0 <= y <= self.height):
+                    self.touch_start = (x, y)
+                    self.touch_dragged = False
+
+            elif ev.type == pygame.MOUSEMOTION and self.touch_start is not None:
+                if not self.touch_dragged:
+                    tx, ty = self.touch_start
+                    if math.hypot(x - tx, y - ty) >= 16:
+                        self.touch_dragged = True
+                        self.drag_position = (x, y)
+                        renpy.display.focus.set_grab(self)
+                        renpy.display.focus.clear_focus()
+
+            elif ev.type == pygame.MOUSEBUTTONUP and getattr(ev, "button", None) == 1:
+                self.touch_start = None
+                if self.touch_dragged:
+                    self.touch_dragged = False
+                    self.drag_position = None
+                    renpy.display.focus.set_grab(None)
+                    raise renpy.display.core.IgnoreEvent()
+
+        if self.draggable and renpy.display.focus.get_grab() == self:
+
+            if self.drag_position is not None:
+                oldx, oldy = self.drag_position
+                dx = x - oldx
+                dy = y - oldy
+
+                self.xadjustment.change(self.xadjustment.value - dx)
+                self.yadjustment.change(self.yadjustment.value - dy)
+
+                self.drag_position = (x, y)  # W0201
+
+            if renpy.display.behavior.map_event(ev, 'viewport_drag_end'):
+                self.drag_position = None
+                self.touch_start = None
+                self.touch_dragged = False
+                renpy.display.focus.set_grab(None)
+                raise renpy.display.core.IgnoreEvent()
+
+            raise renpy.display.core.IgnoreEvent()
+
         rv = super(Viewport, self).event(ev, x, y, st)
 
         if rv is not None:
             return rv
-
-        if self.draggable and renpy.display.focus.get_grab() == self:
-
-            oldx, oldy = self.drag_position
-            dx = x - oldx
-            dy = y - oldy
-
-            self.xadjustment.change(self.xadjustment.value - dx)
-            self.yadjustment.change(self.yadjustment.value - dy)
-
-            self.drag_position = (x, y)  # W0201
-
-            if renpy.display.behavior.map_event(ev, 'viewport_drag_end'):
-                renpy.display.focus.set_grab(None)
-                raise renpy.display.core.IgnoreEvent()
 
         if not ((0 <= x < self.width) and (0 <= y <= self.height)):
             self.edge_xspeed = 0
