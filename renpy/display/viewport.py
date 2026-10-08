@@ -23,6 +23,7 @@
 # the screen.
 
 import math
+import time
 import renpy.display
 import pygame_sdl2 as pygame
 
@@ -317,6 +318,7 @@ class Viewport(renpy.display.layout.Container):
             if ev.type == pygame.MOUSEBUTTONDOWN and getattr(ev, "button", None) == 1:
                 if (0 <= x < self.width) and (0 <= y <= self.height):
                     self.touch_start = (x, y)
+                    self.touch_time = time.time()
                     self.touch_dragged = False
 
             elif ev.type == pygame.MOUSEMOTION and self.touch_start is not None:
@@ -329,14 +331,26 @@ class Viewport(renpy.display.layout.Container):
                         renpy.display.focus.clear_focus()
 
             elif ev.type == pygame.MOUSEBUTTONUP and getattr(ev, "button", None) == 1:
+                is_dragged = self.touch_dragged
+                duration = (time.time() - self.touch_time) if getattr(self, "touch_time", None) else 0.0
                 self.touch_start = None
-                if self.touch_dragged:
-                    self.touch_dragged = False
-                    self.drag_position = None
-                    renpy.display.focus.set_grab(None)
+                self.touch_time = None
+                self.touch_dragged = False
+                self.drag_position = None
+                renpy.display.focus.set_grab(None)
+
+                if is_dragged:
+                    renpy.display.focus.clear_focus()
+                    raise renpy.display.core.IgnoreEvent()
+
+                if getattr(renpy, "android", False) and duration > 0.5:
+                    renpy.display.focus.clear_focus()
                     raise renpy.display.core.IgnoreEvent()
 
         if self.draggable and renpy.display.focus.get_grab() == self:
+
+            if getattr(renpy, "android", False):
+                renpy.display.focus.clear_focus()
 
             if self.drag_position is not None:
                 oldx, oldy = self.drag_position

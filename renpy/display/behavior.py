@@ -30,6 +30,7 @@ from renpy.display.render import render, Render
 import pygame_sdl2 as pygame
 
 import math
+import time
 
 
 def compile_event(key, keydown):
@@ -705,6 +706,8 @@ class Button(renpy.display.layout.Window):
             st, self.time_policy_data = self.style.time_policy(st, self.time_policy_data, self.style)
 
         rv = super(Button, self).render(width, height, st, at)
+        self.button_width = rv.width
+        self.button_height = rv.height
 
         if self.clicked:
 
@@ -823,6 +826,9 @@ class Button(renpy.display.layout.Window):
 
             rv = run(action)
 
+            if getattr(renpy, "android", False):
+                renpy.display.focus.clear_focus()
+
             if rv is not None:
                 return rv
             else:
@@ -840,6 +846,17 @@ class Button(renpy.display.layout.Window):
             rv = super(Button, self).event(ev, x, y, st)
             if rv is not None:
                 return rv
+
+        if getattr(renpy, "android", False):
+            if ev.type == pygame.MOUSEMOTION:
+                bw = getattr(self, "button_width", None)
+                bh = getattr(self, "button_height", None)
+                if bw is not None and bh is not None:
+                    if x < 0 or x >= bw or y < 0 or y >= bh:
+                        if self.is_focused():
+                            self.unfocus()
+                            renpy.display.focus.clear_focus()
+                            renpy.display.render.redraw(self, 0)
 
         if (self.keysym is not None) and (self.clicked is not None):
             if map_event(ev, self.keysym):
@@ -884,8 +901,18 @@ class Button(renpy.display.layout.Window):
         if (self.clicked is not None) and map_event(ev, "button_alternate_ignore"):
             raise renpy.display.core.IgnoreEvent()
 
+        if getattr(renpy, "android", False):
+            if ev.type == pygame.MOUSEBUTTONDOWN and getattr(ev, "button", None) == 1:
+                self.touch_down_time = time.time()
+
         # If clicked,
         if (self.clicked is not None) and map_event(ev, "button_select"):
+            if getattr(renpy, "android", False):
+                down_t = getattr(self, "touch_down_time", None)
+                self.touch_down_time = None
+                if down_t is not None and (time.time() - down_t) > 0.5:
+                    renpy.display.focus.clear_focus()
+                    raise renpy.display.core.IgnoreEvent()
             return handle_click(self.clicked)
 
         if (self.alternate is not None) and map_event(ev, "button_alternate"):

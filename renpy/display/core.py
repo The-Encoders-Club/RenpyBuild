@@ -3255,6 +3255,9 @@ class Interface(object):
                     if rv is None:
                         rv = root_widget.event(ev, x, y, 0)
 
+                    if getattr(renpy, "android", False) and ev.type == pygame.MOUSEBUTTONUP:
+                        renpy.display.focus.clear_focus()
+
                     if rv is None:
                         rv = renpy.display.focus.key_handler(ev)
 

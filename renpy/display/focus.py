@@ -268,7 +268,7 @@ def before_interact(roots):
 def change_focus(newfocus, default=False):
     rv = None
 
-    if grab:
+    if grab and (newfocus is not None):
         return
 
     if newfocus is None:
