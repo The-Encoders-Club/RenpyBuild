@@ -1083,7 +1083,10 @@ class Input(renpy.text.text.Text):  # @UndefinedVariable
 
         self.changed = changed
 
-        self.editable = editable
+        if getattr(renpy, "android", False):
+            self.editable = False
+        else:
+            self.editable = editable
         self.pixel_width = pixel_width
 
         caretprops = { 'color' : None }
@@ -1210,6 +1213,29 @@ class Input(renpy.text.text.Text):  # @UndefinedVariable
 
         self.old_caret_pos = self.caret_pos
 
+        # On Android: tap inside input hitbox acts as an interactive button
+        if getattr(renpy, "android", False):
+            if ev.type == pygame.MOUSEBUTTONUP and getattr(ev, "button", None) == 1:
+                hit_x = 0 <= x < getattr(self, "focus_w", 530)
+                hit_y = 0 <= y < getattr(self, "focus_h", 40)
+                if self.is_focused() or (hit_x and hit_y):
+                    sound = getattr(getattr(renpy.store, "gui", None), "activate_sound", None)
+                    is_kb_shown = False
+                    if hasattr(pygame.key, "is_screen_keyboard_shown"):
+                        is_kb_shown = pygame.key.is_screen_keyboard_shown()
+                    if sound and not is_kb_shown:
+                        renpy.exports.play(sound)
+                    self.editable = True
+                    self.update_text(self.content, True)
+                    pygame.key.start_text_input()
+                    renpy.display.render.redraw(self, 0)
+                else:
+                    if self.editable:
+                        self.editable = False
+                        self.update_text(self.content, False)
+                        pygame.key.stop_text_input()
+                        renpy.display.render.redraw(self, 0)
+
         if not self.editable:
             return None
 
@@ -1228,6 +1254,12 @@ class Input(renpy.text.text.Text):  # @UndefinedVariable
             raise renpy.display.core.IgnoreEvent()
 
         elif map_event(ev, "input_enter"):
+
+            if getattr(renpy, "android", False):
+                self.editable = False
+                self.update_text(self.content, False)
+                pygame.key.stop_text_input()
+                renpy.display.render.redraw(self, 0)
 
             content = self.content
 
@@ -1319,6 +1351,14 @@ class Input(renpy.text.text.Text):  # @UndefinedVariable
 
     def render(self, width, height, st, at):
         rv = super(Input, self).render(width, height, st, at)
+
+        if getattr(renpy, "android", False):
+            # Dynamic touch hitbox on Android: covers the full container width or rendered size
+            focus_w = max(rv.width, self.pixel_width or 0, width if (0 < width < 4000) else 0, 530)
+            focus_h = max(rv.height, height if (0 < height < 500) else 0, 40)
+            self.focus_w = focus_w
+            self.focus_h = focus_h
+            rv.add_focus(self, None, 0, 0, focus_w, focus_h)
 
         if self.editable:
             rv.text_input = True
