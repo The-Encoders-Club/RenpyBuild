@@ -326,6 +326,7 @@ You may be using a system install of python. Please run {0}.sh,
                 if renpy.android:
                     public_base = os.environ.get('ANDROID_PUBLIC_MOD') or os.environ.get('ANDROID_OLD_PUBLIC', '')
                     if public_base:
+                        renpy.config.renpy_base = public_base
                         renpy.config.basedir = public_base
                         renpy.config.gamedir = os.path.join(public_base, 'game')
                         if not os.path.exists(renpy.config.gamedir):

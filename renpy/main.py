@@ -312,6 +312,8 @@ def main():
         internal_gamedir = os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "game")
 
         if public_gamedir:
+            renpy.config.renpy_base = public_base
+            renpy.config.basedir = public_base
             renpy.config.gamedir = public_gamedir
             game.basepath = public_gamedir
             if not os.path.exists(public_gamedir):
