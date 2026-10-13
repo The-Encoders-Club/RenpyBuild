@@ -173,6 +173,28 @@ def choose_variants():
         import android  # @UnresolvedImport
         import math
         import pygame_sdl2 as pygame
+        # Transparently protect pygame_sdl2.event.get and event.clear from Python 2 long type bug
+        try:
+            import pygame_sdl2.event as _py_event
+            _orig_event_get = _py_event.get
+            _orig_event_clear = _py_event.clear
+
+            def _safe_event_get(t=None):
+                if isinstance(t, (int, long)):
+                    t = [t]
+                return _orig_event_get(t)
+
+            def _safe_event_clear(t=None):
+                if isinstance(t, (int, long)):
+                    t = [t]
+                return _orig_event_clear(t)
+
+            _py_event.get = _safe_event_get
+            _py_event.clear = _safe_event_clear
+            pygame.event.get = _safe_event_get
+            pygame.event.clear = _safe_event_clear
+        except Exception:
+            pass
 
         # Transparent fallback wrapper for pygame.image.load to resolve via renpy.loader
         # when submods request images that reside in the APK or have casing variances.

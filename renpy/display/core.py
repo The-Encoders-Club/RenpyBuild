@@ -3103,7 +3103,10 @@ class Interface(object):
                 # prevents us from getting overwhelmed with too many events on
                 # a multitouch screen.
                 if android and (ev.type == pygame.MOUSEBUTTONDOWN or ev.type == pygame.MOUSEBUTTONUP):
-                    pygame.event.clear(ev.type)
+                    try:
+                        pygame.event.clear([ev.type])
+                    except Exception:
+                        pass
 
                 # Handle redraw timeouts.
                 if ev.type == REDRAW:
