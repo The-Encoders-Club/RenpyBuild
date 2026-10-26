@@ -429,6 +429,33 @@ def main():
             except Exception:
                 pass
 
+        # On Android, C extension modules (_ssl, _hashlib, _ctypes...) are linked into librenpython.so,
+        # so they have no __file__. Point it to that library, so submods doing ctypes.CDLL(module.__file__)
+        # (e.g. to call OpenSSL) load the library that really holds those symbols
+        if renpy.android:
+            try:
+                native_so = None
+                with open("/proc/self/maps") as maps:
+                    for line in maps:
+                        path = line.strip().split(" ")[-1]
+                        if path.endswith("/librenpython.so") and os.path.isfile(path):
+                            native_so = path
+                            break
+
+                if native_so is not None:
+                    core_modules = ("__builtin__", "__main__", "sys", "exceptions", "imp", "marshal", "gc", "signal", "zipimport")
+                    for mod_name in sys.builtin_module_names:
+                        if mod_name in core_modules:
+                            continue
+                        try:
+                            mod = __import__(mod_name)
+                            if not hasattr(mod, "__file__"):
+                                mod.__file__ = native_so
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
         # Provide universal _replace_charref in html module for submods (e.g. mistune in Say Something)
         try:
             import html
