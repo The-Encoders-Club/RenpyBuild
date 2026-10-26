@@ -4,9 +4,13 @@ import android.Manifest;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
+import android.graphics.LinearGradient;
+import android.graphics.Shader;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.text.TextPaint;
 import android.text.Layout;
 import android.text.Spannable;
@@ -68,8 +72,7 @@ import java.util.Locale;
  *
  * Designed for Monika After Story (MAS):
  * - Pure solid black background (#000000) for immersive aesthetic.
- * - Dialogue textbox (game/gui/textbox.png / textbox_d.png /
- * textbox_monika_d.png).
+ * - Dialogue textbox drawn by code (MasTextboxDrawable), so no file of the original game is needed.
  * - Choice menu buttons styled with DDLC aesthetics and emerald green hover
  * accent (#5DE23C).
  * - Full automatic initialization of public storage directories in
@@ -89,24 +92,19 @@ public class PermissionGateActivity extends Activity {
     // Where the user gets the official game, which this app doesn't carry
     private static final String DDLC_URL = "http://ddlc.moe";
 
-    // DDLC / MAS asset paths with x- prefix applied by RAPT packaging
-    private static final String ASSET_TEXTBOX_PRIMARY = "x-game/x-gui/x-textbox.png";
-    private static final String ASSET_TEXTBOX_DARK = "x-game/x-gui/x-textbox_d.png";
-    private static final String ASSET_TEXTBOX_MONIKA = "x-game/x-gui/x-textbox_monika_d.png";
+    // Asset paths with x- prefix applied by RAPT packaging
     // MAS Sans lives in the SDK (renpy/common), which RAPT packages as x-renpy/x-common
     private static final String ASSET_FONT_MAS = "x-renpy/x-common/x-FiraSans-Regular-MAS.ttf";
     private static final String ASSET_FONT_MAS_ALT = "x-renpy/x-common/FiraSans-Regular-MAS.ttf";
-    private static final String ASSET_SFX_HOVER = "x-game/x-mod_assets/x-buttons/x-sounds/x-button_hover_day.ogg";
-    private static final String ASSET_SFX_CONFIRM = "x-game/x-mod_assets/x-buttons/x-sounds/x-button_click_day.ogg";
+    // Sounds of the launcher, made for it (not from the original game). They live in the SDK, next to the
+    // MAS Sans font (renpy/common), which RAPT packages as x-renpy/x-common
+    private static final String ASSET_SFX_HOVER = "x-renpy/x-common/x-mas_launcher_hover.wav";
+    private static final String ASSET_SFX_CONFIRM = "x-renpy/x-common/x-mas_launcher_select.wav";
     private static final String[] ASSET_SFX_HOVER_CANDIDATES = new String[] {
-            "x-game/x-mod_assets/x-buttons/x-sounds/x-button_hover_day.ogg",
-            "x-game/x-gui/x-sfx/x-hover.ogg",
-            "game/gui/sfx/hover.ogg"
+            ASSET_SFX_HOVER, "x-renpy/x-common/mas_launcher_hover.wav"
     };
     private static final String[] ASSET_SFX_CONFIRM_CANDIDATES = new String[] {
-            "x-game/x-mod_assets/x-buttons/x-sounds/x-button_click_day.ogg",
-            "x-game/x-gui/x-sfx/x-select.ogg",
-            "game/gui/sfx/select.ogg"
+            ASSET_SFX_CONFIRM, "x-renpy/x-common/mas_launcher_select.wav"
     };
 
     // Palette matching Monika / DDLC UI
@@ -538,19 +536,10 @@ public class PermissionGateActivity extends Activity {
         textboxContainer.setClipChildren(false);
         textboxContainer.setClipToPadding(false);
 
-        // Textbox background image
+        // Textbox background, drawn by code
         ImageView textboxBg = new ImageView(this);
-        Drawable tbDrawable = loadAssetDrawable(ASSET_TEXTBOX_PRIMARY);
-        if (tbDrawable == null) {
-            tbDrawable = loadAssetDrawable(ASSET_TEXTBOX_MONIKA);
-        }
-        if (tbDrawable == null) {
-            tbDrawable = loadAssetDrawable(ASSET_TEXTBOX_DARK);
-        }
-        if (tbDrawable != null) {
-            textboxBg.setImageDrawable(tbDrawable);
-            textboxBg.setScaleType(ImageView.ScaleType.FIT_XY);
-        }
+        textboxBg.setImageDrawable(new MasTextboxDrawable());
+        textboxBg.setScaleType(ImageView.ScaleType.FIT_XY);
         textboxBg.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -1361,6 +1350,192 @@ public class PermissionGateActivity extends Activity {
             finish();
         } catch (Exception e) {
             Log.e(TAG, "Failed to launch PythonSDLActivity", e);
+        }
+    }
+
+    /**
+     * The MAS dialogue box (816 x 146), drawn by code and fitted to the original art, so no file of the
+     * original game is needed. Layers, from the bottom: the pink fill, whose opacity fades from 99% at the top
+     * to 68% at the bottom, the polka dots (same fade), a soft shine at the bottom that only lightens the
+     * colors, and the pale border. It is drawn once into a bitmap of the size of the view.
+     */
+    private static class MasTextboxDrawable extends Drawable {
+        private static final float BOX_W = 816f;
+        private static final float BOX_H = 146f;
+        private static final float RADIUS = 12f;
+        private static final float BORDER = 3f;
+        private static final int FILL_RGB = 0x00FFA8D2;
+        private static final int DOTS_RGB = 0x00FF96C6;
+        private static final int EDGE = 0xFFFFDFEE;
+        private static final float DOT_RADIUS = 9.2f;
+
+        // Opacity of the fill from the top to the bottom: {y, alpha}
+        private static final int[][] FADE = {
+                { 0, 255 }, { 8, 253 }, { 16, 249 }, { 24, 245 }, { 32, 241 }, { 40, 236 }, { 48, 231 },
+                { 56, 225 }, { 64, 219 }, { 72, 213 }, { 80, 207 }, { 88, 202 }, { 96, 196 }, { 104, 191 },
+                { 112, 186 }, { 120, 181 }, { 128, 177 }, { 136, 174 }, { 145, 173 }
+        };
+
+        // How much white the shine adds, in percent, every SHINE_STEP_X units across and SHINE_STEP_Y units
+        // down, starting at SHINE_TOP
+        private static final float SHINE_STEP_X = 24.0f;
+        private static final float SHINE_STEP_Y = 6.0f;
+        private static final float SHINE_TOP = 72.0f;
+        private static final int[][] SHINE = {
+                    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+                    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+                    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+                    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 7, 21, 26, 35, 38, 44, 45, 42, 41, 32, 28, 16, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+                    { 0, 0, 0, 0, 0, 0, 0, 4, 19, 23, 34, 35, 36, 36, 37, 38, 39, 39, 38, 38, 37, 36, 35, 35, 31, 27, 13, 8, 0, 0, 0, 0, 0, 0, 0 },
+                    { 0, 0, 0, 0, 0, 4, 24, 27, 28, 28, 28, 28, 28, 28, 28, 27, 28, 28, 28, 27, 27, 27, 28, 28, 28, 28, 28, 28, 17, 8, 0, 0, 0, 0, 0 },
+                    { 0, 0, 0, 2, 13, 22, 23, 24, 22, 22, 20, 19, 18, 17, 16, 16, 16, 16, 16, 16, 16, 17, 18, 19, 20, 21, 23, 23, 24, 22, 10, 2, 0, 0, 0 },
+                    { 0, 0, 5, 19, 20, 18, 18, 15, 14, 11, 11, 9, 8, 7, 7, 6, 6, 6, 6, 6, 6, 7, 8, 9, 10, 12, 13, 16, 17, 19, 20, 18, 10, 0, 0 },
+                    { 0, 10, 17, 16, 16, 12, 12, 9, 8, 5, 5, 3, 3, 2, 2, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 6, 7, 10, 11, 14, 15, 17, 18, 8, 1 },
+                    { 16, 18, 17, 15, 13, 10, 8, 6, 6, 4, 3, 3, 3, 2, 1, 1, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 5, 7, 8, 11, 12, 15, 16, 18, 18 },
+                    { 18, 18, 16, 14, 12, 11, 9, 8, 7, 6, 5, 4, 4, 3, 2, 2, 1, 0, 1, 1, 2, 3, 4, 4, 6, 6, 7, 8, 9, 10, 12, 14, 16, 18, 19 },
+                    { 18, 18, 16, 15, 13, 13, 12, 11, 10, 10, 8, 7, 5, 5, 3, 2, 1, 0, 1, 2, 4, 5, 6, 6, 8, 9, 10, 11, 12, 12, 14, 14, 16, 16, 24 },
+                    { 17, 17, 17, 16, 15, 14, 13, 13, 11, 11, 9, 9, 6, 6, 3, 3, 1, 0, 1, 2, 4, 5, 7, 8, 10, 10, 12, 12, 14, 14, 15, 15, 16, 17, 53 },
+                    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+        };
+
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF outer = new RectF(0f, 0f, BOX_W, BOX_H);
+        private final RectF edge = new RectF(BORDER / 2f, BORDER / 2f, BOX_W - BORDER / 2f, BOX_H - BORDER / 2f);
+        private final Path clip = new Path();
+        private Bitmap cache;
+
+        MasTextboxDrawable() {
+            clip.addRoundRect(outer, RADIUS, RADIUS, Path.Direction.CW);
+        }
+
+        /** The fade as a vertical gradient of the given color */
+        private Shader fade(int rgb) {
+            int[] colors = new int[FADE.length];
+            float[] positions = new float[FADE.length];
+            for (int i = 0; i < FADE.length; i++) {
+                colors[i] = (FADE[i][1] << 24) | rgb;
+                positions[i] = FADE[i][0] / BOX_H;
+            }
+            return new LinearGradient(0f, 0f, 0f, BOX_H, colors, positions, Shader.TileMode.CLAMP);
+        }
+
+        /** White added by the shine at a point of the box, from 0 to 1 */
+        private static float shineAt(float x, float y) {
+            if (y < SHINE_TOP) {
+                return 0f;
+            }
+
+            float fx = x / SHINE_STEP_X;
+            float fy = (y - SHINE_TOP) / SHINE_STEP_Y;
+            int rows = SHINE.length;
+            int cols = SHINE[0].length;
+            int i0 = Math.min((int) fx, cols - 1);
+            int j0 = Math.min((int) fy, rows - 1);
+            int i1 = Math.min(i0 + 1, cols - 1);
+            int j1 = Math.min(j0 + 1, rows - 1);
+            float tx = Math.min(fx - i0, 1f);
+            float ty = Math.min(fy - j0, 1f);
+            float top = SHINE[j0][i0] * (1f - tx) + SHINE[j0][i1] * tx;
+            float bottom = SHINE[j1][i0] * (1f - tx) + SHINE[j1][i1] * tx;
+            return (top * (1f - ty) + bottom * ty) / 100f;
+        }
+
+        private Bitmap render(int width, int height) {
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            canvas.scale(width / BOX_W, height / BOX_H);
+
+            // 1. Pink fill that gets more transparent towards the bottom
+            paint.setStyle(Paint.Style.FILL);
+            paint.setShader(fade(FILL_RGB));
+            canvas.drawRoundRect(outer, RADIUS, RADIUS, paint);
+
+            // 2. Polka dots, in staggered rows, cut by the shape of the box, with the same fade
+            canvas.save();
+            canvas.clipPath(clip);
+            paint.setShader(fade(DOTS_RGB));
+            for (int row = -1; row < 8; row++) {
+                float odd = row & 1;
+                for (int col = -3; col < 22; col++) {
+                    float x = 23.61f + 46.627f * col + 23.13f * odd + 0.259f * row;
+                    float y = 23.06f + 23.635f * row + 0.0377f * col - 0.17f * odd;
+                    if (x + DOT_RADIUS < 0f || x - DOT_RADIUS > BOX_W || y + DOT_RADIUS < 0f || y - DOT_RADIUS > BOX_H) {
+                        continue;
+                    }
+                    canvas.drawCircle(x, y, DOT_RADIUS, paint);
+                }
+            }
+            canvas.restore();
+            paint.setShader(null);
+
+            // 3. Soft shine: it lightens the colors but keeps the opacity of each pixel
+            int[] pixels = new int[width * height];
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+            for (int y = 0; y < height; y++) {
+                float boxY = (y + 0.5f) * BOX_H / height;
+                if (boxY < SHINE_TOP) {
+                    continue;
+                }
+                for (int x = 0; x < width; x++) {
+                    int pixel = pixels[y * width + x];
+                    int alpha = pixel >>> 24;
+                    if (alpha == 0) {
+                        continue;
+                    }
+                    float white = shineAt((x + 0.5f) * BOX_W / width, boxY);
+                    if (white <= 0f) {
+                        continue;
+                    }
+                    int r = Math.round(((pixel >> 16) & 0xFF) * (1f - white) + 255f * white);
+                    int g = Math.round(((pixel >> 8) & 0xFF) * (1f - white) + 255f * white);
+                    int b = Math.round((pixel & 0xFF) * (1f - white) + 255f * white);
+                    pixels[y * width + x] = (alpha << 24) | (r << 16) | (g << 8) | b;
+                }
+            }
+            bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+
+            // 4. Pale border on top of everything
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(BORDER);
+            paint.setColor(EDGE);
+            canvas.drawRoundRect(edge, RADIUS - BORDER / 2f, RADIUS - BORDER / 2f, paint);
+            return bitmap;
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect bounds = getBounds();
+            if (bounds.width() <= 0 || bounds.height() <= 0) {
+                return;
+            }
+
+            if (cache == null || cache.getWidth() != bounds.width() || cache.getHeight() != bounds.height()) {
+                cache = render(bounds.width(), bounds.height());
+            }
+            canvas.drawBitmap(cache, bounds.left, bounds.top, null);
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return (int) BOX_W;
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return (int) BOX_H;
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+        }
+
+        @Override
+        public void setColorFilter(ColorFilter colorFilter) {
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
         }
     }
 
