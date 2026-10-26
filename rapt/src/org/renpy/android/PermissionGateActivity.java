@@ -1280,7 +1280,7 @@ public class PermissionGateActivity extends Activity {
     // What the previous port (Ren'Py 7) leaves in the public folder. Its notification records are always
     // written, so records.txt tells that the folder comes from that port. Everything it compiled or cached
     // is deleted so the game builds it again clean, and records.txt goes last so a cut cleaning is retried
-    private static final String[] OLD_PORT_ROOT_FILES = { "log.txt", "traceback.txt", "diag_pickle.txt" };
+    private static final String[] OLD_PORT_ROOT_FILES = { "log.txt", "traceback.txt", "records.txt", "diag_pickle.txt", "errors.txt", "masrun" };
     private static final String[] OLD_PORT_GAME_FILES = {
             "log.txt", "traceback.txt", "diag_pickle.txt", "assets.json", "state.json", "submods.rpa"
     };
@@ -1356,7 +1356,7 @@ public class PermissionGateActivity extends Activity {
     /**
      * The MAS dialogue box (816 x 146), drawn by code and fitted to the original art, so no file of the
      * original game is needed. Layers, from the bottom: the pink fill, whose opacity fades from 99% at the top
-     * to 68% at the bottom, the polka dots (same fade), a soft shine at the bottom that only lightens the
+     * to 68% at the bottom, the polka dots (same fade, cut out of the fill), a soft shine at the bottom that only lightens the
      * colors, and the pale border. It is drawn once into a bitmap of the size of the view.
      */
     private static class MasTextboxDrawable extends Drawable {
@@ -1445,15 +1445,9 @@ public class PermissionGateActivity extends Activity {
             Canvas canvas = new Canvas(bitmap);
             canvas.scale(width / BOX_W, height / BOX_H);
 
-            // 1. Pink fill that gets more transparent towards the bottom
-            paint.setStyle(Paint.Style.FILL);
-            paint.setShader(fade(FILL_RGB));
-            canvas.drawRoundRect(outer, RADIUS, RADIUS, paint);
-
-            // 2. Polka dots, in staggered rows, cut by the shape of the box, with the same fade
-            canvas.save();
-            canvas.clipPath(clip);
-            paint.setShader(fade(DOTS_RGB));
+            // The dots are cut out of the fill, so each pixel is drawn once: dots drawn on top of the fill
+            // would pile up their opacity and look lighter than the fill towards the bottom
+            Path dots = new Path();
             for (int row = -1; row < 8; row++) {
                 float odd = row & 1;
                 for (int col = -3; col < 22; col++) {
@@ -1462,9 +1456,26 @@ public class PermissionGateActivity extends Activity {
                     if (x + DOT_RADIUS < 0f || x - DOT_RADIUS > BOX_W || y + DOT_RADIUS < 0f || y - DOT_RADIUS > BOX_H) {
                         continue;
                     }
-                    canvas.drawCircle(x, y, DOT_RADIUS, paint);
+                    dots.addCircle(x, y, DOT_RADIUS, Path.Direction.CW);
                 }
             }
+            Path outsideDots = new Path(dots);
+            outsideDots.setFillType(Path.FillType.INVERSE_WINDING);
+
+            // 1. Pink fill that gets more transparent towards the bottom, without the dots
+            paint.setStyle(Paint.Style.FILL);
+            paint.setShader(fade(FILL_RGB));
+            canvas.save();
+            canvas.clipPath(clip);
+            canvas.clipPath(outsideDots);
+            canvas.drawRoundRect(outer, RADIUS, RADIUS, paint);
+            canvas.restore();
+
+            // 2. Polka dots, cut by the shape of the box, with the same fade
+            canvas.save();
+            canvas.clipPath(clip);
+            paint.setShader(fade(DOTS_RGB));
+            canvas.drawPath(dots, paint);
             canvas.restore();
             paint.setShader(null);
 
