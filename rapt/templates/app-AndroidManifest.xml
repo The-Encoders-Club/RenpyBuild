@@ -42,6 +42,16 @@
         >
     </activity>
 
+    <!-- Restarts the app in a new process (after installing the game files) -->
+    <activity
+        android:name="org.renpy.android.RestartActivity"
+        android:process=":restart"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        android:excludeFromRecents="true"
+        android:exported="false"
+        >
+    </activity>
+
     <provider
         android:name="org.renpy.android.RenPyFileProvider"
         android:authorities="{{ config.package }}.fileprovider"

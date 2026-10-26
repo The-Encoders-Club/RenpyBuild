@@ -3,9 +3,15 @@ package org.renpy.android;
 import android.Manifest;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.ColorFilter;
 import android.graphics.Paint;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.text.TextPaint;
 import android.text.Layout;
+import android.text.Spannable;
+import android.text.SpannableString;
+import android.text.style.UnderlineSpan;
 import android.app.Activity;
 import android.app.ActivityManager;
 import java.util.List;
@@ -45,6 +51,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -77,17 +84,18 @@ public class PermissionGateActivity extends Activity {
     private static final int REQUEST_CODE_MANAGE_STORAGE = 1001;
     private static final int REQUEST_CODE_LEGACY_PERMISSIONS = 1002;
     private static final int REQUEST_CODE_POST_NOTIFICATIONS = 1003;
+    private static final int REQUEST_CODE_DDLC_ZIP = 1004;
+
+    // Where the user gets the official game, which this app doesn't carry
+    private static final String DDLC_URL = "http://ddlc.moe";
 
     // DDLC / MAS asset paths with x- prefix applied by RAPT packaging
     private static final String ASSET_TEXTBOX_PRIMARY = "x-game/x-gui/x-textbox.png";
     private static final String ASSET_TEXTBOX_DARK = "x-game/x-gui/x-textbox_d.png";
     private static final String ASSET_TEXTBOX_MONIKA = "x-game/x-gui/x-textbox_monika_d.png";
-    private static final String ASSET_CHOICE_IDLE = "x-game/x-gui/x-button/x-choice_idle_background.png";
-    private static final String ASSET_CHOICE_HOVER = "x-game/x-gui/x-button/x-choice_hover_background.png";
-    private static final String ASSET_CHOICE_DARK_IDLE = "x-game/x-gui/x-button/x-choice_dark_idle_background.png";
-    private static final String ASSET_CHOICE_DARK_HOVER = "x-game/x-gui/x-button/x-choice_dark_hover_background.png";
-    private static final String ASSET_FONT_ALLER = "x-game/x-gui/x-font/x-Aller_Rg.ttf";
-    private static final String ASSET_FONT_ALLER_ALT = "x-game/x-gui/x-font/Aller_Rg.ttf";
+    // MAS Sans lives in the SDK (renpy/common), which RAPT packages as x-renpy/x-common
+    private static final String ASSET_FONT_MAS = "x-renpy/x-common/x-FiraSans-Regular-MAS.ttf";
+    private static final String ASSET_FONT_MAS_ALT = "x-renpy/x-common/FiraSans-Regular-MAS.ttf";
     private static final String ASSET_SFX_HOVER = "x-game/x-mod_assets/x-buttons/x-sounds/x-button_hover_day.ogg";
     private static final String ASSET_SFX_CONFIRM = "x-game/x-mod_assets/x-buttons/x-sounds/x-button_click_day.ogg";
     private static final String[] ASSET_SFX_HOVER_CANDIDATES = new String[] {
@@ -118,6 +126,78 @@ public class PermissionGateActivity extends Activity {
     private Drawable drawableChoiceIdle;
     private Drawable drawableChoiceHover;
     private Typeface monikaTypeface;
+
+    /**
+     * Background of a choice button: flat colored rectangles, one inside the other, like
+     * the 400x35 images it replaces. It is stretched to the size of the view, so the
+     * border keeps the same proportion those images had when they were stretched.
+     */
+    private static class ChoiceBackground extends Drawable {
+        private static final float REFERENCE_WIDTH = 400f;
+        private static final float REFERENCE_HEIGHT = 35f;
+
+        // Colors from the outermost rectangle to the innermost one
+        private final int[] colors;
+        // Width, in pixels of the 400x35 reference, of each ring before the next color
+        private final int[] borders;
+        private final Paint paint = new Paint();
+
+        ChoiceBackground(int[] colors, int[] borders) {
+            this.colors = colors;
+            this.borders = borders;
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect bounds = getBounds();
+            float scaleX = bounds.width() / REFERENCE_WIDTH;
+            float scaleY = bounds.height() / REFERENCE_HEIGHT;
+
+            float referenceInset = 0f;
+            for (int i = 0; i < colors.length; i++) {
+                int insetX = Math.round(referenceInset * scaleX);
+                int insetY = Math.round(referenceInset * scaleY);
+                paint.setColor(colors[i]);
+                canvas.drawRect(
+                        bounds.left + insetX, bounds.top + insetY,
+                        bounds.right - insetX, bounds.bottom - insetY,
+                        paint);
+                if (i < borders.length) {
+                    referenceInset += borders[i];
+                }
+            }
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+        }
+
+        @Override
+        public void setColorFilter(ColorFilter colorFilter) {
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.OPAQUE;
+        }
+
+        @Override
+        public ConstantState getConstantState() {
+            final int[] stateColors = colors;
+            final int[] stateBorders = borders;
+            return new ConstantState() {
+                @Override
+                public Drawable newDrawable() {
+                    return new ChoiceBackground(stateColors, stateBorders);
+                }
+
+                @Override
+                public int getChangingConfigurations() {
+                    return 0;
+                }
+            };
+        }
+    }
 
     private static class ChoiceButtonHolder {
         final View view;
@@ -156,6 +236,39 @@ public class PermissionGateActivity extends Activity {
     private String fullDialogueText = "";
     private TextView dialogueTextView;
 
+    /** A button of a screen of the gate. */
+    private static class Choice {
+        final String text;
+        final Runnable action;
+
+        Choice(String text, Runnable action) {
+            this.text = text;
+            this.action = action;
+        }
+    }
+
+    private boolean isSpanish = false;
+    private float gateScale = 1f;
+    private LinearLayout buttonContainer;
+    private FrameLayout.LayoutParams buttonContainerParams;
+
+    // The screen being shown: pages of dialogue, and the buttons that appear on the last one
+    private String[] pages = new String[0];
+    private int pageIndex = 0;
+    private Choice[] pageChoices = new Choice[0];
+    // Text of the link that opens the browser (inside the pages), if any
+    private String pageLink = null;
+    private int linkStart = -1;
+    private int linkEnd = -1;
+    // Runs once the current page is completely written
+    private Runnable afterTyping = null;
+
+    private boolean installing = false;
+    private boolean pickerOpen = false;
+
+    // The message over the file chooser of the system: a toast, shown once for its maximum time
+    private Toast pickerHint;
+
     private String getAppName() {
         if (resourceManager == null) {
             resourceManager = new ResourceManager(this);
@@ -188,9 +301,9 @@ public class PermissionGateActivity extends Activity {
         // Hide navigation and status bars for full immersive feeling
         hideSystemUI();
 
-        // If storage permission is already granted, proceed immediately without
-        // displaying the gate
-        if (hasStoragePermission()) {
+        // If the permission is already granted and the files of DDLC are installed, there is
+        // nothing to ask: proceed immediately without displaying the gate
+        if (hasStoragePermission() && isDdlcReady()) {
             createExternalStorageDirectories();
             checkNotificationPermissionAndProceed();
             return;
@@ -210,8 +323,7 @@ public class PermissionGateActivity extends Activity {
         if (isRequestingStorage) {
             isRequestingStorage = false;
             if (hasStoragePermission()) {
-                createExternalStorageDirectories();
-                launchPythonSDLActivity();
+                proceedAfterPermissions();
             }
         }
     }
@@ -219,6 +331,7 @@ public class PermissionGateActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        stopPickerHint();
         if (typewriterHandler != null && typewriterRunnable != null) {
             typewriterHandler.removeCallbacks(typewriterRunnable);
         }
@@ -346,10 +459,10 @@ public class PermissionGateActivity extends Activity {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         float scaleFactor = (float) dm.heightPixels / 720.0f;
 
-        // Load official MAS / DDLC font (Aller_Rg.ttf) with system default as fallback
+        // Load MAS Sans (FiraSans-Regular-MAS.ttf, SIL OFL) with system default as fallback
         String[] fontCandidates = new String[] {
-                ASSET_FONT_ALLER,
-                ASSET_FONT_ALLER_ALT
+                ASSET_FONT_MAS,
+                ASSET_FONT_MAS_ALT
         };
         for (String fPath : fontCandidates) {
             try {
@@ -363,15 +476,15 @@ public class PermissionGateActivity extends Activity {
             monikaTypeface = Typeface.DEFAULT;
         }
 
-        // Load DDLC choice button backgrounds (with dark / fallback options)
-        drawableChoiceIdle = loadAssetDrawable(ASSET_CHOICE_IDLE);
-        if (drawableChoiceIdle == null) {
-            drawableChoiceIdle = loadAssetDrawable(ASSET_CHOICE_DARK_IDLE);
-        }
-        drawableChoiceHover = loadAssetDrawable(ASSET_CHOICE_HOVER);
-        if (drawableChoiceHover == null) {
-            drawableChoiceHover = loadAssetDrawable(ASSET_CHOICE_DARK_HOVER);
-        }
+        // Choice button backgrounds, drawn in code so no image from the original game is needed
+        // idle: 3 px border (#ffbde1) around #ffe6f4
+        drawableChoiceIdle = new ChoiceBackground(
+                new int[] { 0xFFFFBDE1, 0xFFFFE6F4 },
+                new int[] { 3 });
+        // hover: 2 px border (#ffbde1) and 1 px (#ffe1f1) around #ffffff
+        drawableChoiceHover = new ChoiceBackground(
+                new int[] { 0xFFFFBDE1, 0xFFFFE1F1, 0xFFFFFFFF },
+                new int[] { 2, 1 });
 
         // Root container: fullscreen canvas with pure solid black background
         // Overrides dispatchTouchEvent so finger touch anywhere on screen acts as mouse
@@ -396,12 +509,7 @@ public class PermissionGateActivity extends Activity {
         buttonContainer.setOrientation(LinearLayout.VERTICAL);
         buttonContainer.setGravity(Gravity.CENTER_HORIZONTAL);
 
-        int btnWidth = (int) (420 * scaleFactor);
-        int btnHeight = (int) (38 * scaleFactor);
-        int btnSpacing = (int) (22 * scaleFactor); // gui.choice_spacing = 22
-
-        // Total height of 2 buttons + spacing: (38 * 2 + 22) = 98 px.
-        // Centered at y=270: top = 270 - (98 / 2) = 221 px.
+        // The top margin depends on how many buttons the screen has (see showPage())
         FrameLayout.LayoutParams buttonParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT);
@@ -409,29 +517,11 @@ public class PermissionGateActivity extends Activity {
         buttonParams.topMargin = (int) (221 * scaleFactor);
         buttonContainer.setLayoutParams(buttonParams);
 
-        boolean isSpanish = Locale.getDefault().getLanguage().equalsIgnoreCase("es");
-        String acceptText = isSpanish ? "Estoy de acuerdo." : "I agree.";
-        String denyText = isSpanish ? "Salir" : "Exit";
-
-        // Accept button triggers consecutive actions: notifications first if needed,
-        // then storage
-        View acceptButton = createChoiceButton(acceptText, () -> {
-            playSfx(soundConfirmId, false);
-            onAcceptClicked();
-        });
-
-        // Deny button exits the application natively
-        View denyButton = createChoiceButton(denyText, () -> {
-            playSfx(soundConfirmId, false);
-            exitApp();
-        });
-
-        LinearLayout.LayoutParams btnLayoutParam = (LinearLayout.LayoutParams) acceptButton.getLayoutParams();
-        btnLayoutParam.bottomMargin = btnSpacing;
-        acceptButton.setLayoutParams(btnLayoutParam);
-
-        buttonContainer.addView(acceptButton);
-        buttonContainer.addView(denyButton);
+        // The buttons of each screen are added by showPage()
+        isSpanish = Locale.getDefault().getLanguage().equalsIgnoreCase("es");
+        gateScale = scaleFactor;
+        this.buttonContainer = buttonContainer;
+        this.buttonContainerParams = buttonParams;
         rootLayout.addView(buttonContainer);
 
         // 2. BOTTOM TEXTBOX CONTAINER (Ren'Py gui.textbox: 816x146 px, yalign 0.99 ->
@@ -466,7 +556,7 @@ public class PermissionGateActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         textboxContainer.addView(textboxBg);
 
-        // Dialogue text inside textbox (DDLC style: 24px Aller_Rg font, white fill with
+        // Dialogue text inside textbox (DDLC style: 24px MAS Sans font, white fill with
         // black outline)
         OutlineTextView otv = new OutlineTextView(this);
         otv.setStrokeColor(Color.BLACK);
@@ -496,11 +586,13 @@ public class PermissionGateActivity extends Activity {
         // topMargin 23*s + padV 2*s = 25*scaleFactor (raised 1px from 26px to match
         // overlay)
         // effective width: (744 + 10)*s - 10*s = 744*scaleFactor (exact gui.text_width)
-        int textContainerWidth = (int) Math.round((744.0f + 10.0f) * scaleFactor);
+        // The lines already break where the Ren'Py engine breaks them; the extra 24 only keeps a line
+        // that is almost as wide as the box from wrapping because Android measures it a bit wider
+        int textContainerWidth = (int) Math.round((744.0f + 10.0f + 24.0f) * scaleFactor);
         int textContainerHeight = (int) Math.round(115.0f * scaleFactor);
         FrameLayout.LayoutParams tvParams = new FrameLayout.LayoutParams(textContainerWidth, textContainerHeight);
         tvParams.leftMargin = (int) Math.round(33.0f * scaleFactor);
-        tvParams.topMargin = (int) Math.round(25.0f * scaleFactor);
+        tvParams.topMargin = (int) Math.round(22.5f * scaleFactor);
         dialogueTextView.setLayoutParams(tvParams);
 
         textboxContainer.addView(dialogueTextView);
@@ -515,17 +607,8 @@ public class PermissionGateActivity extends Activity {
 
         setContentView(rootLayout);
 
-        // 3. DIALOGUE TEXT (Formatted with DDLC disclaimer/agreement formula from
-        // splash.rpy:L196)
-        // Strictly accent-free to ensure 100% rendering safety with custom ASCII DDLC
-        // fonts
-        if (isSpanish) {
-            fullDialogueText = "Al jugar Monika After Story, aceptas otorgar los permisos de almacenamiento necesarios para gestionar tus partidas, regalos\ny submods en la memoria externa.";
-        } else {
-            fullDialogueText = "By playing Monika After Story, you agree to grant storage permissions to manage your save data, gifts, and submods in external storage.";
-        }
-
-        startTypewriterEffect();
+        // 3. DIALOGUE TEXT: the screens of the gate (see the "Screens" section below)
+        showInitialScreen();
     }
 
     private View createChoiceButton(String text, Runnable onClick) {
@@ -622,11 +705,14 @@ public class PermissionGateActivity extends Activity {
                         clicked.action.run();
                     }
                 } else {
-                    // Tap on empty space or textbox completes typewriter text immediately
+                    // Tap on empty space or textbox completes typewriter text immediately,
+                    // or goes to the next page once the text is complete
                     long duration = System.currentTimeMillis() - touchDownTime;
                     float dist = (float) Math.hypot(rawX - touchDownX, rawY - touchDownY);
                     if (duration < 400 && dist < 30) {
-                        completeTypewriterImmediately();
+                        if (!tryOpenLink(rawX, rawY)) {
+                            completeTypewriterImmediately();
+                        }
                     }
                 }
                 break;
@@ -643,9 +729,15 @@ public class PermissionGateActivity extends Activity {
     }
 
     private void startTypewriterEffect() {
-        typewriterHandler = new Handler(Looper.getMainLooper());
+        if (typewriterHandler == null) {
+            typewriterHandler = new Handler(Looper.getMainLooper());
+        }
+        // A previous page may still be writing
+        if (typewriterRunnable != null) {
+            typewriterHandler.removeCallbacks(typewriterRunnable);
+        }
         typewriterIndex = 0;
-        dialogueTextView.setText("");
+        setDialogueText("");
 
         final long delayMillis = 28;
 
@@ -654,13 +746,75 @@ public class PermissionGateActivity extends Activity {
             public void run() {
                 if (typewriterIndex < fullDialogueText.length()) {
                     typewriterIndex++;
-                    dialogueTextView.setText(fullDialogueText.substring(0, typewriterIndex));
+                    setDialogueText(fullDialogueText.substring(0, typewriterIndex));
                     typewriterHandler.postDelayed(this, delayMillis);
+                } else {
+                    runAfterTyping();
                 }
             }
         };
 
         typewriterHandler.postDelayed(typewriterRunnable, 100);
+    }
+
+    /** Shows the text of the dialogue, with the link (if the page has one) underlined. */
+    private void setDialogueText(String text) {
+        SpannableString spannable = new SpannableString(text);
+        int end = Math.min(linkEnd, text.length());
+        if (linkStart >= 0 && end > linkStart) {
+            spannable.setSpan(new UnderlineSpan(), linkStart, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        dialogueTextView.setText(spannable);
+    }
+
+    private boolean isTypingComplete() {
+        return typewriterIndex >= fullDialogueText.length();
+    }
+
+    private void runAfterTyping() {
+        Runnable action = afterTyping;
+        afterTyping = null;
+        if (action != null) {
+            action.run();
+        }
+    }
+
+    /**
+     * Opens the browser if the tap was on the link of the page.
+     * The root view takes all the touches, so the TextView can't handle the link by itself.
+     */
+    private boolean tryOpenLink(float rawX, float rawY) {
+        if (linkStart < 0 || pageLink == null || dialogueTextView == null || !isTypingComplete()) {
+            return false;
+        }
+        Layout layout = dialogueTextView.getLayout();
+        if (layout == null) {
+            return false;
+        }
+
+        int[] loc = new int[2];
+        dialogueTextView.getLocationOnScreen(loc);
+        float x = rawX - loc[0] - dialogueTextView.getTotalPaddingLeft();
+        float y = rawY - loc[1] - dialogueTextView.getTotalPaddingTop();
+        if (x < 0 || y < 0) {
+            return false;
+        }
+
+        int line = layout.getLineForVertical((int) y);
+        if (y > layout.getLineBottom(line) + 8 * gateScale || x > layout.getLineRight(line) + 16 * gateScale) {
+            return false;
+        }
+        int offset = layout.getOffsetForHorizontal(line, x);
+        if (offset < linkStart - 1 || offset > linkEnd) {
+            return false;
+        }
+
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(pageLink)));
+        } catch (Exception e) {
+            Log.w(TAG, "Could not open " + pageLink, e);
+        }
+        return true;
     }
 
     private boolean hasStoragePermission() {
@@ -717,8 +871,7 @@ public class PermissionGateActivity extends Activity {
 
     private void requestStoragePermission() {
         if (hasStoragePermission()) {
-            createExternalStorageDirectories();
-            checkNotificationPermissionAndProceed();
+            proceedAfterPermissions();
             return;
         }
 
@@ -746,8 +899,7 @@ public class PermissionGateActivity extends Activity {
 
         if (requestCode == REQUEST_CODE_POST_NOTIFICATIONS) {
             if (hasStoragePermission()) {
-                createExternalStorageDirectories();
-                launchPythonSDLActivity();
+                proceedAfterPermissions();
             }
         } else if (requestCode == REQUEST_CODE_LEGACY_PERMISSIONS) {
             boolean allGranted = true;
@@ -758,8 +910,7 @@ public class PermissionGateActivity extends Activity {
                 }
             }
             if (allGranted) {
-                createExternalStorageDirectories();
-                launchPythonSDLActivity();
+                proceedAfterPermissions();
             }
         }
     }
@@ -769,9 +920,319 @@ public class PermissionGateActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_MANAGE_STORAGE) {
             if (hasStoragePermission()) {
-                createExternalStorageDirectories();
-                launchPythonSDLActivity();
+                proceedAfterPermissions();
             }
+        } else if (requestCode == REQUEST_CODE_DDLC_ZIP) {
+            pickerOpen = false;
+            stopPickerHint();
+            Uri zip = (resultCode == RESULT_OK && data != null) ? data.getData() : null;
+            if (zip != null) {
+                startInstall(zip);
+            } else {
+                // Cancelled: offer the same choice again
+                showPickerScreen(false);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Screens: disclaimer -> permissions -> choose ddlc-win.zip -> copy -> game
+    // ------------------------------------------------------------------------------------
+
+    private String t(String spanish, String english) {
+        return isSpanish ? spanish : english;
+    }
+
+    /** Private folder of the app that holds the original files (kept when the app is updated). */
+    private File internalGameDir() {
+        return new File(getFilesDir(), "game");
+    }
+
+    private File publicGameDir() {
+        return new File(new File(Environment.getExternalStorageDirectory(), getAppName()), "game");
+    }
+
+    /**
+     * True when the four files of the original game are installed. The ones that someone
+     * put by hand in the public game folder count too.
+     */
+    private boolean isDdlcReady() {
+        if (InstallerDDLC.isInstalled(internalGameDir())) {
+            return true;
+        }
+        return hasStoragePermission() && InstallerDDLC.hasFiles(publicGameDir());
+    }
+
+    /** Once the permissions are granted: ask for the game files if they are missing, or start. */
+    private void proceedAfterPermissions() {
+        createExternalStorageDirectories();
+        if (isDdlcReady()) {
+            launchPythonSDLActivity();
+        } else {
+            showPickerScreen(true);
+        }
+    }
+
+    private void showInitialScreen() {
+        if (!isDdlcReady()) {
+            showDisclaimerScreen();
+        } else {
+            // The game files are there, only the permission is missing
+            showPermissionsScreen();
+        }
+    }
+
+    /** Message 1: disclaimer and where to get the game. */
+    private void showDisclaimerScreen() {
+        // The line breaks are the ones of the Ren'Py engine for the same width, font and size,
+        // so the text is drawn like the game draws it. 3 lines is the most the box holds
+        showDialogue(new String[] {
+                t("Monika After Story es una modificaci\u00f3n de fans para Doki Doki\nLiterature Club y no est\u00e1 afiliada con Team Salvato.",
+                        "Monika After Story is a fan-made mod for Doki Doki Literature Club\nand is not affiliated with Team Salvato."),
+                t("Este port para android est\u00e1 dise\u00f1ado para ser jugado \u00fanicamente\ntras haber completado el juego oficial original, ya que contiene\nspoilers importantes del mismo.",
+                        "This Android port is meant to be played only after completing the\noriginal game, since it contains major spoilers for it."),
+                t("En estricto apego a las directrices de propiedad intelectual de Team\nSalvato, esta aplicaci\u00f3n no incluye archivos del juego base ni los\ndescarga en tu nombre.",
+                        "In strict compliance with Team Salvato's IP guidelines, this app does\nnot include the files of the base game, nor does it download them\nfor you."),
+                t("Para poder continuar, es obligatorio que aportes los archivos de tu\npropia copia oficial, la cual se puede obtener gratuitamente en:\nhttp://ddlc.moe",
+                        "To continue, you must provide the files of your own official copy,\nwhich you can get for free at:\nhttp://ddlc.moe")
+        }, DDLC_URL, new Choice(t("Ya tengo DDLC.", "I already have DDLC."), () -> {
+            playSfx(soundConfirmId, false);
+            // The storage permission goes first, as the files are copied right after
+            if (hasStoragePermission()) {
+                proceedAfterPermissions();
+            } else {
+                showPermissionsScreen();
+            }
+        }),
+                new Choice(t("Salir", "Exit"), () -> {
+                    playSfx(soundConfirmId, false);
+                    exitApp();
+                }));
+    }
+
+    /** Message 2: why the storage permission is needed. */
+    private void showPermissionsScreen() {
+        showDialogue(new String[] {
+                t("Para que este port funcione correctamente y mantenga la paridad\ntotal con PC, se requieren permisos de almacenamiento en tu\ndispositivo.",
+                        "For this port to work properly and keep full parity with the PC\nversion, storage permissions are required on your device."),
+                t("Esto garantiza el guardado seguro de tu progreso, as\u00ed como la\ninstalaci\u00f3n de los archivos base, regalos y submods en la carpeta\ndel juego.",
+                        "This guarantees the safe saving of your progress, as well as the\ninstallation of the base files, gifts and submods in the game folder."),
+                t("\u00bfEst\u00e1s de acuerdo con otorgar los permisos de almacenamiento\npara continuar?",
+                        "Do you agree to grant the storage permissions to continue?")
+        }, null,
+                // Accept triggers consecutive actions: notifications first if needed, then storage
+                new Choice(t("Estoy de acuerdo.", "I agree."), () -> {
+                    playSfx(soundConfirmId, false);
+                    onAcceptClicked();
+                }),
+                // Deny exits the application natively
+                new Choice(t("Salir", "Exit"), () -> {
+                    playSfx(soundConfirmId, false);
+                    exitApp();
+                }));
+    }
+
+    /**
+     * Asks for ddlc-win.zip. The message "Seleccione ddlc-win.zip por favor." is the title of the
+     * file chooser of the system, so the dialogue stays empty while it is open. If the user
+     * cancels it, the buttons let them try again.
+     */
+    private void showPickerScreen(boolean openAutomatically) {
+        if (installing || pickerOpen) {
+            return;
+        }
+
+        if (openAutomatically) {
+            showDialogue(new String[] { "" }, null);
+            launchZipPicker();
+            return;
+        }
+
+        showDialogue(new String[] {
+                t("Para continuar necesitas el archivo ddlc-win.zip de tu copia oficial\nde DDLC.",
+                        "To continue you need the ddlc-win.zip file\nof your official DDLC copy.")
+        }, null,
+                new Choice(t("Elegir archivo", "Choose file"), () -> {
+                    playSfx(soundConfirmId, false);
+                    launchZipPicker();
+                }),
+                new Choice(t("Salir", "Exit"), () -> {
+                    playSfx(soundConfirmId, false);
+                    exitApp();
+                }));
+    }
+
+    private void startPickerHint() {
+        stopPickerHint();
+
+        pickerHint = Toast.makeText(this,
+                t("Seleccione ddlc-win.zip por favor.", "Please select ddlc-win.zip."),
+                Toast.LENGTH_LONG);
+        pickerHint.show();
+    }
+
+    private void stopPickerHint() {
+        if (pickerHint != null) {
+            pickerHint.cancel();
+            pickerHint = null;
+        }
+    }
+
+    private void launchZipPicker() {
+        if (installing || pickerOpen || isFinishing()) {
+            return;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            // Some file managers don't call a zip application/zip, and would grey it out
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
+                    "application/zip",
+                    "application/x-zip-compressed",
+                    "application/octet-stream"
+            });
+
+            // The title of the chooser is the message the user reads
+            Intent chooser = Intent.createChooser(intent,
+                    t("Seleccione ddlc-win.zip por favor.", "Please select ddlc-win.zip."));
+            pickerOpen = true;
+            startPickerHint();
+            startActivityForResult(chooser, REQUEST_CODE_DDLC_ZIP);
+        } catch (Exception e) {
+            pickerOpen = false;
+            stopPickerHint();
+            Log.w(TAG, "Could not open the file chooser", e);
+        }
+    }
+
+    private void showProgressScreen() {
+        showDialogue(new String[] {
+                t("Estamos empaquetando todo, espere unos momentos por favor...",
+                        "We are packing everything, please wait a moment...")
+        }, null);
+    }
+
+    private void showRetryScreen(String message) {
+        showDialogue(new String[] { message }, DDLC_URL,
+                new Choice(t("Elegir otro archivo", "Choose another file"), () -> {
+                    playSfx(soundConfirmId, false);
+                    launchZipPicker();
+                }),
+                new Choice(t("Salir", "Exit"), () -> {
+                    playSfx(soundConfirmId, false);
+                    exitApp();
+                }));
+    }
+
+    /** Copies the game files out of the zip in a thread, as it takes a few seconds. */
+    private void startInstall(final Uri zip) {
+        installing = true;
+        showProgressScreen();
+
+        final File gameDir = internalGameDir();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                InstallerDDLC.Result result;
+                try (InputStream in = getContentResolver().openInputStream(zip)) {
+                    result = (in == null)
+                            ? InstallerDDLC.Result.UNREADABLE
+                            : InstallerDDLC.install(in, gameDir, null);
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not read the zip", e);
+                    result = InstallerDDLC.Result.UNREADABLE;
+                }
+                if (InstallerDDLC.lastError != null) {
+                    Log.w(TAG, "DDLC install: " + InstallerDDLC.lastError);
+                }
+
+                final InstallerDDLC.Result finalResult = result;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        onInstallFinished(finalResult);
+                    }
+                });
+            }
+        }, "ddlc-install").start();
+    }
+
+    private void onInstallFinished(InstallerDDLC.Result result) {
+        installing = false;
+        if (isFinishing()) {
+            return;
+        }
+
+        switch (result) {
+            case OK:
+                showDialogue(new String[] { t("Instalación completa.", "Installation complete.") }, null);
+                // The game doesn't start in this run: the app restarts in a new process, and
+                // the next run finds everything installed and starts the game
+                afterTyping = () -> typewriterHandler.postDelayed(() -> RestartActivity.restart(this), 2000);
+                break;
+            case NO_SPACE:
+                showRetryScreen(t("No hay espacio suficiente en el almacenamiento.\nLibera unos 250 MB y vuelve a intentarlo.",
+                        "There is not enough storage space. Free about 250 MB and try again."));
+                break;
+            default:
+                showRetryScreen(t("Ese archivo no es el ddlc-win.zip oficial, o est\u00e1 da\u00f1ado. Desc\u00e1rgalo\nde nuevo desde http://ddlc.moe e int\u00e9ntalo otra vez.",
+                        "That file is not the official ddlc-win.zip, or it is damaged. Download\nit again from http://ddlc.moe and try again."));
+                break;
+        }
+    }
+
+    /**
+     * Shows a screen: pages of dialogue (a tap goes to the next one) and, on the last one,
+     * the buttons.
+     * @param link text inside the pages that opens the browser when tapped, or null
+     */
+    private void showDialogue(String[] newPages, String link, Choice... choices) {
+        pages = newPages;
+        pageIndex = 0;
+        pageChoices = choices;
+        pageLink = link;
+        showPage();
+    }
+
+    private void showPage() {
+        fullDialogueText = pages[pageIndex];
+        afterTyping = null;
+
+        linkStart = -1;
+        linkEnd = -1;
+        if (pageLink != null) {
+            linkStart = fullDialogueText.indexOf(pageLink);
+            if (linkStart >= 0) {
+                linkEnd = linkStart + pageLink.length();
+            }
+        }
+
+        buttonContainer.removeAllViews();
+        choiceButtonHolders.clear();
+        currentlyHoveredHolder = null;
+        if (pageIndex == pages.length - 1) {
+            addChoiceButtons(pageChoices);
+        }
+
+        startTypewriterEffect();
+    }
+
+    private void addChoiceButtons(Choice[] choices) {
+        // Ren'Py choice_vbox is centered at y=270: n buttons of 38 px with 22 px between them
+        int count = choices.length;
+        float totalHeight = 38f * count + 22f * Math.max(count - 1, 0);
+        buttonContainerParams.topMargin = (int) ((270f - totalHeight / 2f) * gateScale);
+        buttonContainer.setLayoutParams(buttonContainerParams);
+
+        for (int i = 0; i < count; i++) {
+            View button = createChoiceButton(choices[i].text, choices[i].action);
+            if (i < count - 1) {
+                LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) button.getLayoutParams();
+                lp.bottomMargin = (int) (22 * gateScale); // gui.choice_spacing = 22
+                button.setLayoutParams(lp);
+            }
+            buttonContainer.addView(button);
         }
     }
 
@@ -899,17 +1360,31 @@ public class PermissionGateActivity extends Activity {
         }
     }
 
+    /** First tap writes the whole page, the next one goes to the following page (if any). */
     private void completeTypewriterImmediately() {
-        if (typewriterHandler != null && typewriterRunnable != null) {
-            typewriterHandler.removeCallbacks(typewriterRunnable);
+        if (dialogueTextView == null || fullDialogueText == null) {
+            return;
         }
-        if (dialogueTextView != null && fullDialogueText != null) {
-            dialogueTextView.setText(fullDialogueText);
+
+        if (!isTypingComplete()) {
+            if (typewriterHandler != null && typewriterRunnable != null) {
+                typewriterHandler.removeCallbacks(typewriterRunnable);
+            }
+            typewriterIndex = fullDialogueText.length();
+            setDialogueText(fullDialogueText);
+            runAfterTyping();
+        } else if (pageIndex < pages.length - 1) {
+            pageIndex++;
+            showPage();
         }
     }
 
     @Override
     public void onBackPressed() {
+        // While the files are being copied there is nothing to go back to
+        if (installing) {
+            return;
+        }
         exitApp();
     }
 
