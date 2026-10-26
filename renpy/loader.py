@@ -63,10 +63,6 @@ def get_path(fn):
 
 # Asset Loading
 
-# Seconds and details of the startup steps below, written to log.txt by main.py
-startup_timings = [ ]
-
-
 class _LazyOffsets(dict):
     """
     Data offset of each apk entry, computed the first time the entry is opened
@@ -130,8 +126,6 @@ def _open_apks(apk_path, prefixes):
 try:
     import android.apk
 
-    _apks_start = time.time()
-
     expansion = os.environ.get("ANDROID_EXPANSION", None)
     if expansion is not None:
         print("Using expansion file", expansion)
@@ -154,9 +148,6 @@ try:
             ]
 
     game_apks = [ apks[0] ]
-
-    startup_timings.append("Index apk ({} files) took {:.3f}s".format(
-        sum(len(i.info) for i in apks), time.time() - _apks_start))
 
 except ImportError:
     apks = [ ]
@@ -196,8 +187,6 @@ def _load_rpa_index(f):
 def _index_apk_archives():
     import zipfile
 
-    start = time.time()
-
     for apk in game_apks:
         for fn in sorted(apk.info):
 
@@ -215,9 +204,6 @@ def _index_apk_archives():
                 f.close()
 
                 apk_archives.append((apk.apk, apk.offset[fn], index))
-
-                startup_timings.append("Index apk archive {} ({} files) took {:.3f}s".format(
-                    fn[2:], len(index), time.time() - start))
 
             except Exception as e:
                 print("Could not index archive in the apk", fn, repr(e))

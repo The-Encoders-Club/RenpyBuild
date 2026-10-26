@@ -548,9 +548,6 @@ def main():
     # Start auto-loading.
     renpy.loader.auto_init()
 
-    for s in renpy.loader.startup_timings:
-        renpy.display.log.write(s)
-
     log_clock("Loader init")
 
     # Initialize the log.
