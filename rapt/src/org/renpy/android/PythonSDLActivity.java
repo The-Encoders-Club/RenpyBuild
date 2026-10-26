@@ -772,6 +772,70 @@ public boolean mStopDone = true;
         startActivity(i);
     }
 
+    /**
+     * True when the app may ask the system to install an apk (the "install unknown apps"
+     * permission of Android 8 and later).
+     */
+    public boolean canInstallApks() {
+        if (Build.VERSION.SDK_INT < 26) {
+            return true;
+        }
+
+        return getPackageManager().canRequestPackageInstalls();
+    }
+
+    /**
+     * Opens the system installer for an apk that was downloaded to a public folder.
+     */
+    public void installApk(String file) {
+        File f = new File(file);
+
+        Uri uri = null;
+        if (Build.VERSION.SDK_INT >= 24) {
+            uri = RenPyFileProvider.getUriForFile(this, getPackageName() + ".fileprovider", f);
+        } else {
+            uri = Uri.fromFile(f);
+        }
+
+        Intent i = new Intent(Intent.ACTION_VIEW);
+        i.setDataAndType(uri, "application/vnd.android.package-archive");
+        i.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
+    }
+
+    /**
+     * Opens the settings page where the user allows this app to install apps.
+     */
+    public void openInstallSettings() {
+        Intent i;
+
+        if (Build.VERSION.SDK_INT >= 26) {
+            i = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+        } else {
+            i = new Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS);
+        }
+
+        i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
+    }
+
+    /**
+     * The version code of the installed app, the number Android compares for updates.
+     */
+    public long getInstalledVersionCode() {
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+
+            if (Build.VERSION.SDK_INT >= 28) {
+                return info.getLongVersionCode();
+            }
+
+            return info.versionCode;
+        } catch (NameNotFoundException e) {
+            return 0;
+        }
+    }
+
     public void vibrate(double s) {
         Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         if (v != null) {

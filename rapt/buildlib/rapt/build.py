@@ -29,6 +29,7 @@ import time
 import gzip
 import subprocess
 import hashlib
+import json
 import collections
 
 from . import plat
@@ -631,6 +632,44 @@ def size_tree(dn):
     return rv
 
 
+def write_update_info(apk, config):
+    """
+    Writes updates-android.json next to the apk: what the game needs to know to
+    offer this apk as an update. The apk is already signed, so the size and the
+    sha256 are the ones of the file that gets published.
+
+    version is the version of the game and version_code the number that Android
+    compares, so a patch of the same version is still newer.
+    """
+
+    sha256 = hashlib.sha256()
+
+    with open(apk, "rb") as f:
+        while True:
+            block = f.read(1024 * 1024)
+
+            if not block:
+                break
+
+            sha256.update(block)
+
+    info = collections.OrderedDict([
+        ("version", str(config.version)),
+        ("version_code", int(config.numeric_version)),
+        ("file", os.path.basename(apk)),
+        ("size", os.path.getsize(apk)),
+        ("sha256", sha256.hexdigest()),
+        ])
+
+    fn = os.path.join(os.path.dirname(apk), "updates-android.json")
+
+    with open(fn, "w") as f:
+        json.dump(info, f, indent=4)
+        f.write("\n")
+
+    return fn
+
+
 def build(iface, directory, base=None, install=False, bundle=False, launch=False, finished=None, permissions=[], version=None):
 
     if isinstance(base, (list, tuple)):
@@ -864,16 +903,26 @@ def build(iface, directory, base=None, install=False, bundle=False, launch=False
 
             sfn = os.path.join(i, j)
 
-            dfn = "bin/{}-{}-{}-{}".format(
-                config.package,
-                config.version,
-                config.numeric_version,
-                j[4:])
+            if j.endswith(".apk"):
+                # The name the apk is published with, the same for every build of a version
+                dfn = "bin/{}-{}-Android.apk".format(
+                    config.name.replace(" ", "_"),
+                    config.version)
+
+            else:
+                dfn = "bin/{}-{}-{}-{}".format(
+                    config.package,
+                    config.version,
+                    config.numeric_version,
+                    j[4:])
 
             dfn = plat.path(dfn)
 
             shutil.copy(sfn, dfn)
             files.append(dfn)
+
+            if dfn.endswith(".apk"):
+                files.append(write_update_info(dfn, config))
 
     # Install the bundle.
 
