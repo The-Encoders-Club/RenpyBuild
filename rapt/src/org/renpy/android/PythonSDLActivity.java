@@ -8,30 +8,47 @@ import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.PowerManager;
 import android.os.Vibrator;
+import android.os.VibrationEffect;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.View.OnSystemUiVisibilityChangeListener;
+import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.RelativeLayout;
 import android.widget.Toast;
-
+import android.widget.ProgressBar;
+import android.view.Window;
+import android.view.WindowManager;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 
-import org.renpy.iap.Store;
+import java.util.Collections;
+import java.util.HashMap;
 
-public class PythonSDLActivity extends SDLActivity {
+import com.google.android.play.core.assetpacks.*;
+import com.google.android.play.core.assetpacks.model.*;
+import com.google.android.gms.tasks.*;
+
+public class PythonSDLActivity extends SDLActivity implements AssetPackStateUpdateListener {
 
     /**
      * This exists so python code can access this activity.
@@ -44,7 +61,6 @@ public class PythonSDLActivity extends SDLActivity {
      */
     public FrameLayout mFrameLayout;
 
-
     /**
      * A layout that contains mLayout. This is a 3x3 grid, with the layout
      * in the center. The idea is that if someone wants to show an ad, they
@@ -52,26 +68,36 @@ public class PythonSDLActivity extends SDLActivity {
      */
     public LinearLayout mVbox;
 
-    ResourceManager resourceManager;
+    /**
+     * This is set by the renpy.iap.Store when it's loaded. If it's not loadable, this
+     * remains null;
+     */
+    public StoreInterface mStore = null;
 
+    ResourceManager resourceManager;
 
     protected String[] getLibraries() {
         return new String[] {
-            "png16",
-            "SDL2",
-            "SDL2_image",
-            "SDL2_ttf",
-            "SDL2_gfx",
-            "SDL2_mixer",
-            "python2.7",
-            "pymodules",
-            "main",
+            "renpython",
         };
     }
 
+    // Creates the IAP store, when needed. /////////////////////////////////////////
+
+    public void createStore() {
+        if (Constants.store.equals("none")) {
+            return;
+        }
+
+        try {
+            Class cls = Class.forName("org.renpy.iap.Store");
+            cls.getMethod("create", PythonSDLActivity.class).invoke(null, this);
+        } catch (Exception e) {
+            Log.e("PythonSDLActivity", "Failed to create store: " + e.toString());
+        }
+    }
 
     // GUI code. /////////////////////////////////////////////////////////////
-
 
     public void addView(View view, int index) {
         mVbox.addView(view, index, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, (float) 0.0));
@@ -94,50 +120,11 @@ public class PythonSDLActivity extends SDLActivity {
     }
 
 
-    private void setupMainWindowDisplayMode() {
-        View decorView = setSystemUiVisibilityMode();
-        decorView.setOnSystemUiVisibilityChangeListener(new OnSystemUiVisibilityChangeListener() {
-            @Override
-            public void onSystemUiVisibilityChange(int visibility) {
-                setSystemUiVisibilityMode(); // Needed to avoid exiting immersive_sticky when keyboard is displayed
-            }
-        });
-    }
-
-    private View setSystemUiVisibilityMode() {
-        View decorView = getWindow().getDecorView();
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-
-            int options;
-            options =
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION // hide nav bar
-                    | View.SYSTEM_UI_FLAG_FULLSCREEN // hide status bar
-                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-
-            decorView.setSystemUiVisibility(options);
-
-        }
-
-        return decorView;
-    }
-
+    // Overriding this makes SDL respect the orientation given in the Android
+    // manifest.
     @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-
-        if (hasFocus) {
-            setupMainWindowDisplayMode();
-        }
-    }
-
-    @Override
-    public void onResume() {
-        super.onResume();
-        setupMainWindowDisplayMode();
+    public void setOrientationBis(int w, int h, boolean resizable, String hint) {
+        return;
     }
 
     // Code to unpack python and get things running ///////////////////////////
@@ -163,32 +150,37 @@ public class PythonSDLActivity extends SDLActivity {
          */
         new File(target, "main.pyo").delete();
 
+        boolean shouldUnpack = false;
+
         // The version of data in memory and on disk.
         String data_version = resourceManager.getString(resource + "_version");
         String disk_version = null;
 
-        // If no version, no unpacking is necessary.
-        if (data_version == null) {
-            return;
-        }
-
-        // Check the current disk version, if any.
         String filesDir = target.getAbsolutePath();
         String disk_version_fn = filesDir + "/" + resource + ".version";
 
-        try {
-            byte buf[] = new byte[64];
-            InputStream is = new FileInputStream(disk_version_fn);
-            int len = is.read(buf);
-            disk_version = new String(buf, 0, len);
-            is.close();
-        } catch (Exception e) {
-            disk_version = "";
+        // If no version, no unpacking is necessary.
+        if (data_version != null) {
+
+            try {
+                byte buf[] = new byte[64];
+                InputStream is = new FileInputStream(disk_version_fn);
+                int len = is.read(buf);
+                disk_version = new String(buf, 0, len);
+                is.close();
+            } catch (Exception e) {
+                disk_version = "";
+            }
+
+            if (! data_version.equals(disk_version)) {
+                shouldUnpack = true;
+            }
         }
+
 
         // If the disk data is out of date, extract it and write the
         // version file.
-        if (! data_version.equals(disk_version)) {
+        if (shouldUnpack) {
             Log.v("python", "Extracting " + resource + " assets.");
 
             // Delete old libraries & renpy files.
@@ -249,14 +241,15 @@ public class PythonSDLActivity extends SDLActivity {
 
         resourceManager = new ResourceManager(this);
 
-        String appDirName = resourceManager.getString("appName");
-        if (appDirName == null || appDirName.isEmpty()) {
-            appDirName = resourceManager.getString("app_name");
+        String appName = resourceManager.getString("appName");
+        if (appName == null || appName.isEmpty()) {
+            appName = resourceManager.getString("app_name");
         }
-        if (appDirName == null || appDirName.isEmpty()) {
-            appDirName = getPackageName();
+        if (appName == null || appName.isEmpty()) {
+            appName = "Just Natsuki";
         }
-        File oldExternalStorage = new File(Environment.getExternalStorageDirectory(), appDirName);
+        File publicModStorage = new File(Environment.getExternalStorageDirectory(), appName);
+        File oldExternalStorage = publicModStorage;
         File externalStorage = getExternalFilesDir(null);
         File path;
 
@@ -264,19 +257,12 @@ public class PythonSDLActivity extends SDLActivity {
             externalStorage = oldExternalStorage;
         }
 
-        if (resourceManager.getString("public_version") != null) {
-            path = externalStorage;
-        } else {
-            path = getFilesDir();
-        }
-
         unpackData("private", getFilesDir());
-        unpackData("public", externalStorage);
 
-        nativeSetEnv("ANDROID_ARGUMENT", path.getAbsolutePath());
         nativeSetEnv("ANDROID_PRIVATE", getFilesDir().getAbsolutePath());
         nativeSetEnv("ANDROID_PUBLIC",  externalStorage.getAbsolutePath());
-        nativeSetEnv("ANDROID_OLD_PUBLIC", oldExternalStorage.getAbsolutePath());
+        nativeSetEnv("ANDROID_OLD_PUBLIC", publicModStorage.getAbsolutePath());
+        nativeSetEnv("ANDROID_PUBLIC_MOD", publicModStorage.getAbsolutePath());
 
         // Figure out the APK path.
         String apkFilePath;
@@ -292,57 +278,509 @@ public class PythonSDLActivity extends SDLActivity {
 
         nativeSetEnv("ANDROID_APK", apkFilePath);
 
-        String expansionFile = getIntent().getStringExtra("expansionFile");
-
-        if (expansionFile != null) {
-            nativeSetEnv("ANDROID_EXPANSION", expansionFile);
+        if (!mAllPacksReady) {
+            Log.i("python", "Waiting for all packs to become ready.");
         }
 
-        nativeSetEnv("PYTHONOPTIMIZE", "2");
-        nativeSetEnv("PYTHONHOME", getFilesDir().getAbsolutePath());
-        nativeSetEnv("PYTHONPATH", path.getAbsolutePath() + ":" + getFilesDir().getAbsolutePath() + "/lib");
+        synchronized (this) {
+            while (!mAllPacksReady) {
+                try {
+                    this.wait();
+                } catch (InterruptedException e) { /* pass */ }
+            }
+        }
 
         Log.v("python", "Finished preparePython.");
 
     };
 
-    // Code to support devicePurchase. /////////////////////////////////////////
+    // App lifecycle.
+    public ImageView mPresplash = null;
+
+    Bitmap getBitmap(String assetName) {
+        try {
+            InputStream is = getAssets().open(assetName);
+            Bitmap rv = BitmapFactory.decodeStream(is);
+            is.close();
+
+            return rv;
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    boolean mAllPacksReady = false;
+    AssetPackManager mAssetPackManager = null;
+
+    // The pack download progress bar.
+    ProgressBar mProgressBar = null;
+
+    /**
+     * Given a pack name, return true if it's been downloaded and is
+     * ready for use, or false otherwise. Returns true if the pack
+     * doesn't exist at all.
+     */
+    boolean checkPack(String name) {
+        AssetPackLocation location = mAssetPackManager.getPackLocation(name);
+        if (location != null) {
+            if (location.assetsPath() != null) {
+                nativeSetEnv("ANDROID_PACK_" + name.toUpperCase(), location.assetsPath());
+            } else {
+                AssetLocation loc = mAssetPackManager.getAssetLocation(name, "00_pack.txt");
+                if (loc != null) {
+                    nativeSetEnv("ANDROID_PACK_" + name.toUpperCase(), loc.path());
+                }
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Log.v("python", "onCreate()");
         super.onCreate(savedInstanceState);
-        Store.create(this);
+
+        if (mLayout == null) {
+            return;
+        }
+
+        // Initalize the store support.
+        createStore();
+
+        boolean allPacksReady = true;
+
+        if (Constants.assetPacks.length > 0) {
+
+            mAssetPackManager = AssetPackManagerFactory.getInstance(this);
+            mAssetPackManager.registerListener(this);
+
+            for (String pack : Constants.assetPacks) {
+                if (! checkPack(pack) ) {
+                    Log.i("python", "fetching: " + pack);
+                    mAssetPackManager.fetch(Collections.singletonList(pack));
+                    allPacksReady = false;
+                }
+            }
+
+        }
+
+        mAllPacksReady = allPacksReady;
+
+        String bitmapFilename;
+
+        if (allPacksReady) {
+            bitmapFilename = "android-presplash";
+        } else {
+            bitmapFilename = "android-downloading";
+        }
+
+        // Show the presplash.
+        Bitmap presplashBitmap = getBitmap(bitmapFilename + ".png");
+
+        if (presplashBitmap == null) {
+            presplashBitmap = getBitmap(bitmapFilename + ".jpg");
+        }
+
+        if (presplashBitmap != null) {
+
+            mPresplash = new ImageView(this);
+            mPresplash.setBackgroundColor(presplashBitmap.getPixel(0, 0));
+            mPresplash.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            mPresplash.setImageBitmap(presplashBitmap);
+
+            mLayout.addView(mPresplash, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.FILL_PARENT, ViewGroup.LayoutParams.FILL_PARENT));
+        }
+
+        if (!mAllPacksReady) {
+            RelativeLayout.LayoutParams prlp = new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.FILL_PARENT, 20);
+            prlp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+            prlp.leftMargin = 20;
+            prlp.rightMargin = 20;
+            prlp.bottomMargin = 20;
+
+            mProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+            mLayout.addView(mProgressBar, prlp);
+        }
+
+    }
+
+    /**
+     * Applies full-screen immersive mode across Android 6 through 16.
+     */
+    public static void applyImmersiveMode() {
+        if (mActivity == null) {
+            return;
+        }
+
+        mActivity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Window window = mActivity.getWindow();
+                    if (window == null) {
+                        return;
+                    }
+
+                    // Android 9+ (API 28 - 36): Enable layout around camera notch / cutout
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        WindowManager.LayoutParams lp = window.getAttributes();
+                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                        window.setAttributes(lp);
+                    }
+
+                    // Android 11+ (API 30 - 36): Modern WindowInsetsController
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        WindowInsetsController controller = window.getInsetsController();
+                        if (controller != null) {
+                            controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                            controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                        }
+                    }
+
+                    // Android 6 - 10 (API 23 - 29) & fallback:
+                    setWindowStyle(true);
+                } catch (Exception e) {
+                    Log.e("PythonSDLActivity", "Error applying immersive mode: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            applyImmersiveMode();
+        }
+    }
+
+    /**
+     * Called natively by Ren'Py after the first frame has been drawn.
+     */
+    public static void hidePresplash() {
+        if (mActivity == null) {
+            return;
+        }
+
+        mActivity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (mActivity.mPresplash != null) {
+                    mActivity.mLayout.removeView(mActivity.mPresplash);
+                    mActivity.mPresplash = null;
+                    Log.i("python", ">>> [PRESPLASH OCULTADO NATIVAMENTE] <<<");
+                }
+
+                if (mActivity.mProgressBar != null) {
+                    mActivity.mLayout.removeView(mActivity.mProgressBar);
+                    mActivity.mProgressBar = null;
+                }
+
+                applyImmersiveMode();
+            }
+        });
+    }
+
+    private boolean mIsFinishingTask = false;
+
+    @Override
+    public void finish() {
+        if (Build.VERSION.SDK_INT >= 21 && !mIsFinishingTask) {
+            mIsFinishingTask = true;
+            finishAndRemoveTask();
+            return;
+        }
+        super.finish();
     }
 
     @Override
     protected void onDestroy() {
-        super.onDestroy();
-        Store.getStore().destroy();
-    }
+        Log.v("python", "onDestroy()");
 
-    protected void onActivityResult(int requestCode, int resultCode, Intent intent) {
-        if (Store.getStore().onActivityResult(requestCode, resultCode, intent)) {
-            return;
+        super.onDestroy();
+
+        if (mStore != null) {
+            mStore.destroy();
         }
 
-        super.onActivityResult(requestCode, resultCode, intent);
+        if (isFinishing()) {
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }
     }
 
-    // Code to support public APIs. ////////////////////////////////////////////
+
+
+
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        Log.v("python", "onNewIntent()");
+        setIntent(intent);
+    }
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    public static boolean mPipEnabled = false;
+
+    public static void setPipEnabled(final boolean enabled) {
+        mPipEnabled = enabled;
+        if (mActivity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            mActivity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        android.app.PictureInPictureParams.Builder builder = new android.app.PictureInPictureParams.Builder();
+                        builder.setAspectRatio(new android.util.Rational(16, 9));
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                            builder.setAutoEnterEnabled(enabled);
+                            builder.setSeamlessResizeEnabled(false);
+                        }
+                        mActivity.setPictureInPictureParams(builder.build());
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            });
+        }
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (!isInPictureInPictureMode() && (mPipEnabled || isPipEnabledFromFile())) {
+                try {
+                    android.app.PictureInPictureParams.Builder builder = new android.app.PictureInPictureParams.Builder();
+                    builder.setAspectRatio(new android.util.Rational(16, 9));
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        builder.setAutoEnterEnabled(true);
+                        builder.setSeamlessResizeEnabled(false);
+                    }
+                    enterPictureInPictureMode(builder.build());
+                } catch (Exception e) {
+                    try {
+                        enterPictureInPictureMode();
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Reads the PiP preference from the .data bridge file written by Ren'Py.
+     * Returns true only if the user has explicitly enabled PiP in the game settings.
+     */
+    private boolean isPipEnabledFromFile() {
+        try {
+            java.io.File f = new java.io.File(
+                "/storage/emulated/0/Monika After Story/log/.data");
+            if (!f.exists()) return false;
+            java.io.FileInputStream fis = new java.io.FileInputStream(f);
+            byte[] data = new byte[(int) f.length()];
+            fis.read(data);
+            fis.close();
+            String content = new String(data, "UTF-8").trim();
+            return "1".equals(content) || "true".equalsIgnoreCase(content);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, android.content.res.Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        handlePipOrientationChange(isInPictureInPictureMode);
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode);
+        handlePipOrientationChange(isInPictureInPictureMode);
+    }
+
+    private void handlePipOrientationChange(boolean isInPictureInPictureMode) {
+        android.util.Log.d("MAS_PIP", "handlePipOrientationChange: isInPictureInPictureMode=" + isInPictureInPictureMode);
+        try {
+            getWindow().getDecorView().requestLayout();
+        } catch (Exception e) {
+            android.util.Log.e("MAS_PIP", "Error requesting layout in handlePipOrientationChange: " + e.toString());
+        }
+    }
+
+public boolean mStopDone = true;
+
+    @Override
+    public void onStop() {
+        Log.v("python", "onStop() start.");
+
+        super.onStop();
+        long startTime = System.currentTimeMillis();
+
+        synchronized (this) {
+            while (true) {
+                if (mStopDone) {
+                    break;
+                }
+
+                // Backstop.
+                if (startTime + 8000 < System.currentTimeMillis()) {
+                    break;
+                }
+
+                try {
+                    this.wait(100);
+                } catch (InterruptedException e) { /* pass */ }
+
+            }
+        }
+
+        Log.v("python", "onStop() done.");
+    }
+
+    public void armOnStop () {
+        Log.v("python", "armOnStop()");
+        mStopDone = false;
+    }
+
+    public void finishOnStop() {
+        Log.v("python", "finishOnStop()");
+
+        synchronized (this) {
+            mStopDone = true;
+            this.notifyAll();
+        }
+    }
+
+    HashMap<String, AssetPackState> assetPackStates = new HashMap<String, AssetPackState>();
+
+    long mOldProgress = 0;
+
+    public void onStateUpdate(AssetPackState assetPackState) {
+        Log.i("packs", "onStateUpdate: " + assetPackState.toString());
+
+        assetPackStates.put(assetPackState.name(), assetPackState);
+
+        switch (assetPackState.status()) {
+          case AssetPackStatus.PENDING:
+            break;
+
+          case AssetPackStatus.DOWNLOADING:
+            break;
+
+          case AssetPackStatus.TRANSFERRING:
+            break;
+
+          case AssetPackStatus.COMPLETED:
+            break;
+
+          case AssetPackStatus.FAILED:
+            Toast.makeText(this, "Download of " + assetPackState.name() + " failed. Error " + assetPackState.errorCode(), Toast.LENGTH_LONG).show();
+            Log.e("python", "error = " + assetPackState.errorCode());
+
+          case AssetPackStatus.CANCELED:
+            mAssetPackManager.fetch(Collections.singletonList(assetPackState.name()));
+            break;
+
+          case AssetPackStatus.WAITING_FOR_WIFI:
+          case AssetPackStatus.REQUIRES_USER_CONFIRMATION:
+            mAssetPackManager.showConfirmationDialog(this);
+            break;
+
+          case AssetPackStatus.NOT_INSTALLED:
+            break;
+        }
+
+        // Check all the asset packs again.
+        boolean allPacksReady = true;
+
+        long totalBytesToDownload = 0;
+        long bytesDownloaded = 0;
+
+        if (Constants.assetPacks.length > 0) {
+            for (String pack : Constants.assetPacks) {
+                if (! checkPack(pack) ) {
+                    allPacksReady = false;
+                }
+
+                AssetPackState aps = assetPackStates.get(pack);
+                if (aps != null) {
+                    totalBytesToDownload += aps.totalBytesToDownload();
+                    bytesDownloaded += aps.bytesDownloaded();
+                }
+            }
+        }
+
+        Log.d("packs", "totalBytesToDownload=" + totalBytesToDownload + ", bytesDownloaded=" + bytesDownloaded);
+
+        // Protect against a DBZ.
+        if (totalBytesToDownload == 0) {
+            totalBytesToDownload = 1;
+        }
+
+        final long newProgress = 100 * bytesDownloaded / totalBytesToDownload;
+
+        if (mOldProgress != newProgress) {
+            mOldProgress = newProgress;
+
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (mProgressBar != null) {
+                        mProgressBar.setProgress((int) newProgress);
+                    }
+                }
+            });
+        }
+
+        synchronized (this) {
+            mAllPacksReady = allPacksReady;
+            this.notifyAll();
+        }
+    }
+
+
+    // Support public APIs. ////////////////////////////////////////////////////
 
     public void openUrl(String url) {
-        Log.i("python", "Opening URL: " + url);
+        openURL(url);
+    }
 
-        Intent i = new Intent(Intent.ACTION_VIEW);
-        i.setData(Uri.parse(url));
+    public void openEditor(String file) {
+		File f = new File(file);
+
+		Uri uri = null;
+		if (Build.VERSION.SDK_INT >= 24) {
+			uri = RenPyFileProvider.getUriForFile(this, getPackageName() + ".fileprovider", f);
+		} else {
+			uri = Uri.fromFile(f);
+		}
+
+		Intent i = new Intent(Intent.ACTION_VIEW);
+		i.setDataAndType(uri, "text/plain");
+		i.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(i);
     }
 
     public void vibrate(double s) {
         Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         if (v != null) {
-            v.vibrate((int) (1000 * s));
-        }
+			if (Build.VERSION.SDK_INT >= 26) {
+				v.vibrate(VibrationEffect.createOneShot((int) (1000 * s), VibrationEffect.DEFAULT_AMPLITUDE));
+			} else {
+				v.vibrate((int) (1000 * s));
+			}
+		}
     }
 
     public int getDPI() {
@@ -365,6 +803,31 @@ public class PythonSDLActivity extends SDLActivity {
         } else {
             wakeLock.release();
         }
+    }
+
+    // Activity Requests ///////////////////////////////////////////////////////
+
+    // The thought behind this is that this will make it possible to call
+    // mActivity.startActivity(Intent, requestCode), then poll the fields on
+    // this object until the response comes back.
+
+    public int mActivityResultRequestCode = -1;
+    public int mActivityResultResultCode = -1;
+    public Intent mActivityResultResultData = null;
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent resultData) {
+        if (mStore != null && mStore.onActivityResult(requestCode, resultCode, resultData)) {
+            return;
+        }
+
+        Log.v("python", "onActivityResult(" + requestCode + ", " + resultCode + ", " + resultData.toString() + ")");
+
+        mActivityResultRequestCode = requestCode;
+        mActivityResultResultCode = resultCode;
+        mActivityResultResultData = resultData;
+
+        super.onActivityResult(requestCode, resultCode, resultData);
     }
 
 }
