@@ -289,6 +289,92 @@ class Script(object):
             if (fn, dir) not in target:
                 target.append((fn, dir))
 
+    def ddlc_cache_stamp(self):
+        """
+        Identifies the scripts.rpa the second bundle was made from, so it is rebuilt if that file changes.
+        """
+
+        for base in (os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "game"), renpy.config.gamedir):
+            try:
+                st = os.stat(os.path.join(base, "scripts.rpa"))
+                return [ int(st.st_size), int(st.st_mtime) ]
+            except Exception:
+                pass
+
+        return None
+
+    def read_ddlc_cache(self, path, stamp, names):
+        """
+        Returns the records of the second bundle, or None if it is missing or does not match.
+        """
+
+        if stamp is None:
+            return None
+
+        try:
+            with open(path, "rb") as f:
+                cache = loads(f.read().decode("zlib"))
+
+            if cache["script_version"] != script_version or cache["stamp"] != stamp or cache["requested"] != names:
+                return None
+
+            return cache["files"]
+        except Exception:
+            return None
+
+    def read_rpyc_record(self, fn):
+        """
+        Reads the compiled script fn as a bundle record: (name, pickled data, digest, slot).
+        """
+
+        f = renpy.loader.load(fn + ".rpyc")
+        try:
+            raw = f.read()
+        finally:
+            f.close()
+
+        digest = raw[-hashlib.md5().digest_size:]
+
+        if raw[:10] != "RENPY RPC2":
+            return (fn, zlib.decompress(raw), None, 1)
+
+        pos = 10
+        while True:
+            slot, start, length = struct.unpack("III", raw[pos:pos + 12])
+
+            if slot in (2, 1):
+                return (fn, zlib.decompress(raw[start:start + length]), digest, slot)
+
+            if slot == 0:
+                raise Exception("No usable slot in %s." % fn)
+
+            pos += 12
+
+    def write_ddlc_cache(self, path, stamp, names, taken):
+        """
+        Saves the scripts taken from scripts.rpa as the second bundle. Returns True on success.
+        """
+
+        if stamp is None:
+            return False
+
+        try:
+            files = [ self.read_rpyc_record(fn) for fn in taken ]
+            data = dumps({
+                "script_version": script_version,
+                "stamp": stamp,
+                "requested": names,
+                "files": files,
+                }, 2).encode("zlib")
+
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.rename(tmp, path)
+            return True
+        except Exception:
+            return False
+
     def load_monolithic_script(self, initcode, game_scripts):
         """
         Attempts to load game scripts from a unified monolithic script bundle (script.rpyb).
@@ -339,7 +425,9 @@ class Script(object):
                     t_bc_start = time.time()
                     ver, bcache = loads(bundle["bytecode_raw"].decode("zlib"))
                     if ver == BYTECODE_VERSION:
-                        self.bytecode_oldcache = bcache
+                        # Merge, so blocks compiled on an earlier run (those not in the bundle,
+                        # like submods) stay cached and the cache is not rewritten every start.
+                        self.bytecode_oldcache.update(bcache)
                         t_bc_inject = time.time() - t_bc_start
                 except Exception:
                     pass
@@ -347,6 +435,22 @@ class Script(object):
             records = bundle["files"]
             loaded_files = set()
             success_count = 0
+
+            # The scripts of the original game that MAS needs are not in the bundle. The first time they are
+            # taken out of the user's scripts.rpa and saved as a second bundle; from then on that one is used.
+            original_scripts = bundle.get("original_scripts")
+            original_names = sorted(original_scripts) if (renpy.android and original_scripts) else None
+            ddlc_cache_path = None
+            ddlc_stamp = None
+            ddlc_cached = False
+
+            if original_names:
+                ddlc_cache_path = os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "scripts.rpyb")
+                ddlc_stamp = self.ddlc_cache_stamp()
+                cached_records = self.read_ddlc_cache(ddlc_cache_path, ddlc_stamp, original_names)
+                if cached_records:
+                    records = list(records) + cached_records
+                    ddlc_cached = True
 
             t_loads_sum = 0.0
             t_finish_sum = 0.0
@@ -390,9 +494,25 @@ class Script(object):
 
             # Check for any dynamic / external scripts not in the bundle (e.g. Submods)
             remaining_scripts = [ (fn, dir) for (fn, dir) in game_scripts if fn not in loaded_files ]
+
+            # The original game's scripts.rpa carries chapters MAS never runs; only the scripts the bundle
+            # lists as used are loaded from it (loading all of them cost ~0.35s every start)
+            if original_names:
+                original_set = frozenset(original_names)
+                remaining_scripts = [
+                    (fn, dir) for (fn, dir) in remaining_scripts
+                    if dir is not None or fn in original_set
+                    ]
+
             if remaining_scripts:
                 for fn, dir in remaining_scripts:
                     self.load_appropriate_file(".rpyc", ".rpy", dir, fn, initcode)
+
+            # First start with the original game installed: keep its scripts as a second bundle
+            if original_names and not ddlc_cached:
+                taken = [ fn for (fn, dir) in remaining_scripts if dir is None and fn in original_set ]
+                if taken:
+                    self.write_ddlc_cache(ddlc_cache_path, ddlc_stamp, original_names, taken)
 
             return True
 
