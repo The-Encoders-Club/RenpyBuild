@@ -1013,3 +1013,268 @@ def auto_quit():
         auto_lock.notify_all()
 
     auto_thread.join()
+
+
+# Join the apk and the public game folder for the python code of the game ##################################
+
+# The loader above already reads both, but only for what goes through it (images, scripts, sounds...).
+# The python code of a game or a submod lists and opens files with os.listdir, os.path.exists and open,
+# which only see real files, so whatever is inside the apk stays hidden from it. Here those functions also
+# look at the apk when the path is inside the game folder:
+#
+# * os.listdir adds the names that are in the apk.
+# * os.path.exists, isdir and isfile say yes for what is in the apk.
+# * open and io.open (read only) read a file from the apk when it is not on disk.
+#
+# A file on disk always wins over the one in the apk, writing is never touched, and only the python code of
+# the game is affected: the calls made by the engine itself (the renpy package) and by the standard library
+# go straight to the real functions. The index of the apk is built the first time it is needed, from the
+# apk index above, so it costs nothing at startup.
+
+import io
+import __builtin__
+
+_fs_orig_listdir = os.listdir
+_fs_orig_exists = os.path.exists
+_fs_orig_isdir = os.path.isdir
+_fs_orig_isfile = os.path.isfile
+_fs_orig_open = __builtin__.open
+_fs_orig_io_open = io.open
+
+_fs_installed = False
+_fs_index = None  # (files, dirs), built the first time it is needed
+_fs_apk = None    # object with .info and .open(name), the game part of the apk
+_fs_roots = []    # real game folders, as they are written by the game
+
+
+def _fs_decode(s):
+    if isinstance(s, unicode):
+        return s
+    try:
+        return s.decode("utf-8")
+    except Exception:
+        return s.decode("latin-1")
+
+
+def _fs_strip(component):
+    # Every name in the apk starts with "x-", so aapt includes every file.
+    if component.startswith("x-"):
+        return component[2:]
+    return component
+
+
+def _fs_build_index(apk):
+    """
+    Returns (files, dirs) of an apk object: `files` maps the path inside the game folder to the name
+    in the apk, `dirs` maps each folder to the set of names it holds.
+    """
+
+    files = {}
+    dirs = {u"": set()}
+
+    for key in apk.info:
+        parts = [_fs_strip(c) for c in _fs_decode(key).split(u"/")]
+
+        if not parts[-1]:
+            continue
+
+        files[u"/".join(parts)] = key
+
+        for i in range(len(parts)):
+            dirs.setdefault(u"/".join(parts[:i]), set()).add(parts[i])
+
+    return files, dirs
+
+
+def _fs_get_index():
+    global _fs_index
+    if _fs_index is None:
+        _fs_index = _fs_build_index(_fs_apk)
+    return _fs_index
+
+
+def _fs_from_game_code():
+    """
+    True when the function was called from the python code of the game (the store), not by the engine
+    or the standard library.
+    """
+
+    try:
+        name = sys._getframe(2).f_globals.get("__name__", "")
+    except Exception:
+        return False
+
+    return name == "store" or name.startswith("store.")
+
+
+def _fs_relative(path):
+    """
+    The path inside the game folder, or None if `path` isn't in it.
+    """
+
+    if not isinstance(path, (str, unicode)):
+        return None
+
+    for root in _fs_roots:
+        try:
+            matches = path.startswith(root)
+        except UnicodeError:
+            return None
+
+        if matches:
+            rest = path[len(root):]
+            if rest and rest[0] not in ("/", "\\"):
+                continue
+
+            rest = rest.replace("\\", "/")
+            parts = [p for p in rest.split("/") if p and p != "."]
+
+            if ".." in parts:
+                return None
+
+            return _fs_decode(u"/".join(parts))
+
+    return None
+
+
+def _fs_listdir(path="."):
+    rel = _fs_relative(path)
+    if rel is not None and not _fs_from_game_code():
+        rel = None
+
+    if rel is None:
+        return _fs_orig_listdir(path)
+
+    dirs = _fs_get_index()[1]
+    names = dirs.get(rel)
+
+    try:
+        real = _fs_orig_listdir(path)
+    except OSError:
+        if names is None:
+            raise
+        return list(names)
+
+    if not names:
+        return real
+
+    seen = set(real)
+    return real + [n for n in names if n not in seen]
+
+
+def _fs_exists(path):
+    if _fs_orig_exists(path):
+        return True
+
+    rel = _fs_relative(path)
+    if rel is not None and not _fs_from_game_code():
+        rel = None
+
+    if rel is None:
+        return False
+
+    files, dirs = _fs_get_index()
+    return rel in files or rel in dirs
+
+
+def _fs_isdir(path):
+    if _fs_orig_isdir(path):
+        return True
+
+    rel = _fs_relative(path)
+    if rel is not None and not _fs_from_game_code():
+        rel = None
+
+    if rel is None:
+        return False
+
+    return rel in _fs_get_index()[1]
+
+
+def _fs_isfile(path):
+    if _fs_orig_isfile(path):
+        return True
+
+    rel = _fs_relative(path)
+    if rel is not None and not _fs_from_game_code():
+        rel = None
+
+    if rel is None:
+        return False
+
+    return rel in _fs_get_index()[0]
+
+
+def _fs_read_only(mode):
+    return not any(c in mode for c in "wa+x")
+
+
+def _fs_apk_data(path):
+    """
+    The bytes of a file that is only in the apk, or None.
+    """
+
+    rel = _fs_relative(path)
+    if rel is None:
+        return None
+
+    key = _fs_get_index()[0].get(rel)
+    if key is None:
+        return None
+
+    f = _fs_apk.open(key)
+    try:
+        return f.read()
+    finally:
+        f.close()
+
+
+def _fs_open(name, mode="r", *args, **kwargs):
+    if _fs_read_only(mode) and _fs_relative(name) is not None and _fs_from_game_code() and not _fs_orig_exists(name):
+        data = _fs_apk_data(name)
+        if data is not None:
+            return io.BytesIO(data)
+
+    return _fs_orig_open(name, mode, *args, **kwargs)
+
+
+def _fs_io_open(file, mode="r", *args, **kwargs):  # @ReservedAssignment
+    if isinstance(file, (str, unicode)) and _fs_read_only(mode) and _fs_relative(file) is not None and _fs_from_game_code() and not _fs_orig_exists(file):
+        data = _fs_apk_data(file)
+        if data is not None:
+            raw = io.BytesIO(data)
+            if "b" in mode:
+                return raw
+
+            encoding = kwargs.get("encoding") or (args[1] if len(args) > 1 else None) or "utf-8"
+            errors = kwargs.get("errors") or (args[2] if len(args) > 2 else None)
+            return io.TextIOWrapper(raw, encoding=encoding, errors=errors)
+
+    return _fs_orig_io_open(file, mode, *args, **kwargs)
+
+
+def join_apk_and_public_game_folders(roots):
+    """
+    Replaces the file functions so the python code of the game also sees the game folder of the apk.
+    `roots` are the real paths of the game folder, as the game writes them.
+    """
+
+    global _fs_installed, _fs_apk, _fs_roots, _fs_index
+
+    if not game_apks:
+        return
+
+    _fs_apk = game_apks[0]
+    _fs_index = None
+    _fs_roots = [ r for r in roots if r ]
+
+    if _fs_installed:
+        return
+
+    os.listdir = _fs_listdir
+    os.path.exists = _fs_exists
+    os.path.isdir = _fs_isdir
+    os.path.isfile = _fs_isfile
+    __builtin__.open = _fs_open
+    io.open = _fs_io_open
+    _fs_installed = True

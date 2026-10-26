@@ -350,6 +350,14 @@ def main():
         renpy.config.searchpath = searchpath
         renpy.config.commondir = None
 
+        # The python code of the game (os.listdir, os.path.exists, open) sees the game folder inside the
+        # apk as part of the public one, as the loader of the engine already does.
+        try:
+            renpy.loader.join_apk_and_public_game_folders(
+                [ renpy.config.gamedir, os.path.join(renpy.config.basedir, "game") ])
+        except Exception as e:
+            print("Could not join the apk and public game folders:", repr(e))
+
         # Add parent of cachedir to searchpath so renpy.loader.load("cache/...") finds files in native Android cache
         if getattr(renpy.config, "cachedir", None):
             cache_parent = os.path.dirname(renpy.config.cachedir)
