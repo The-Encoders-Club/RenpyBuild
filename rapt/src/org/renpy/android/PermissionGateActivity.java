@@ -1288,7 +1288,72 @@ public class PermissionGateActivity extends Activity {
         }
     }
 
+    // What the previous port (Ren'Py 7) leaves in the public folder. Its notification records are always
+    // written, so records.txt tells that the folder comes from that port. Everything it compiled or cached
+    // is deleted so the game builds it again clean, and records.txt goes last so a cut cleaning is retried
+    private static final String[] OLD_PORT_ROOT_FILES = { "log.txt", "traceback.txt", "diag_pickle.txt" };
+    private static final String[] OLD_PORT_GAME_FILES = {
+            "log.txt", "traceback.txt", "diag_pickle.txt", "assets.json", "state.json", "submods.rpa"
+    };
+    // Hidden files of the old services, in the log folder. .data is not here: it keeps the picture in
+    // picture choice and the new port writes the same file
+    private static final String[] OLD_PORT_LOG_FILES = { ".awareness", ".discord_rpc", ".discord_token" };
+
+    private void cleanOldPortFiles() {
+        try {
+            if (!hasStoragePermission()) {
+                return;
+            }
+
+            File root = new File(Environment.getExternalStorageDirectory(), getAppName());
+            File marker = new File(root, "records.txt");
+            if (!marker.exists()) {
+                return;
+            }
+
+            File game = new File(root, "game");
+            for (String name : OLD_PORT_ROOT_FILES) {
+                new File(root, name).delete();
+            }
+            for (String name : OLD_PORT_GAME_FILES) {
+                new File(game, name).delete();
+            }
+
+            File logDir = new File(root, "log");
+
+            for (String name : OLD_PORT_LOG_FILES) {
+                new File(logDir, name).delete();
+            }
+
+            int rpyc = deleteCompiledScripts(game);
+            new File(root, "records_old.txt").delete();
+            marker.delete();
+            Log.i(TAG, "Old port files cleaned, " + rpyc + " rpyc deleted");
+        } catch (Throwable e) {
+            Log.e(TAG, "Could not clean the files of the old port", e);
+        }
+    }
+
+    /** Deletes every .rpyc under dir (the engine compiles them again). RETURNS how many were deleted. */
+    private int deleteCompiledScripts(File dir) {
+        int count = 0;
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return 0;
+        }
+
+        for (File child : children) {
+            if (child.isDirectory()) {
+                count += deleteCompiledScripts(child);
+            } else if (child.getName().endsWith(".rpyc") && child.delete()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private void launchPythonSDLActivity() {
+        cleanOldPortFiles();
         try {
             Intent intent = new Intent(this, PythonSDLActivity.class);
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
