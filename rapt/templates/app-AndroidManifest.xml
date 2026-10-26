@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools" android:installLocation="auto">
 
-  <application
+  <application android:name="com.tec.monikaafterstory.MASApplication"
       android:allowBackup="false"
       android:icon="@mipmap/icon"
       android:label="@string/appName"
@@ -32,6 +32,7 @@
 
     <activity
         android:name="org.renpy.android.PythonSDLActivity"
+        android:supportsPictureInPicture="true"
         android:label="@string/iconName"
         android:alwaysRetainTaskState="true"
         android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
@@ -62,7 +63,7 @@
     </receiver>
 {% endif %}
 
-    <receiver android:name="com.tec.monikaafterstory.NotificationActionReceiver" android:exported="true">
+    <receiver android:name="com.tec.monikaafterstory.NotificationActionReceiver" android:exported="false">
       <intent-filter>
         <action android:name="com.tec.monikaafterstory.ACTION_DISMISS" />
       </intent-filter>
