@@ -503,15 +503,28 @@ def main():
                     load_rpe(dir + "/" + fn)
 
     # The basename is the final component of the path to the gamedir.
-    if os.path.isdir(renpy.config.gamedir):
-        for i in sorted(os.listdir(renpy.config.gamedir)):
+    # On Android the .rpa of the original game are installed in the game folder of the app
+    # (private storage), next to the public one, so both are looked at
+    archive_dirs = [ renpy.config.gamedir ]
+    if renpy.android:
+        archive_dirs.append(os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "game"))
+
+    found_archive = False
+    for archive_dir in archive_dirs:
+        if not os.path.isdir(archive_dir):
+            continue
+
+        found_archive = True
+        for i in sorted(os.listdir(archive_dir)):
 
             if not i.endswith(".rpa"):
                 continue
 
             i = i[:-4]
-            renpy.config.archives.append(i)
+            if i not in renpy.config.archives:
+                renpy.config.archives.append(i)
 
+    if found_archive:
         renpy.config.archives.reverse()
 
     # Initialize archives.
@@ -534,6 +547,9 @@ def main():
 
     # Start auto-loading.
     renpy.loader.auto_init()
+
+    for s in renpy.loader.startup_timings:
+        renpy.display.log.write(s)
 
     log_clock("Loader init")
 

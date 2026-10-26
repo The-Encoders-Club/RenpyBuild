@@ -27,6 +27,7 @@ from cStringIO import StringIO
 import sys
 import types
 import threading
+import time
 import zlib
 import re
 
@@ -62,33 +63,168 @@ def get_path(fn):
 
 # Asset Loading
 
+# Seconds and details of the startup steps below, written to log.txt by main.py
+startup_timings = [ ]
+
+
+class _LazyOffsets(dict):
+    """
+    Data offset of each apk entry, computed the first time the entry is opened
+    instead of reading every entry header at startup.
+    """
+
+    def __init__(self, apk_path, info):
+        dict.__init__(self)
+        self.apk_path = apk_path
+        self.info = info
+
+    def __missing__(self, fn):
+        import struct
+        import zipfile
+
+        info = self.info[fn]
+
+        with open(self.apk_path, "rb") as f:
+            f.seek(info.header_offset)
+            h = struct.unpack(zipfile.structFileHeader, f.read(zipfile.sizeFileHeader))
+
+        rv = (
+            info.header_offset +
+            zipfile.sizeFileHeader +
+            h[zipfile._FH_FILENAME_LENGTH] +
+            h[zipfile._FH_EXTRA_FIELD_LENGTH])
+
+        self[fn] = rv
+        return rv
+
+
+def _open_apks(apk_path, prefixes):
+    """
+    Same as creating one android.apk.APK per prefix, but the zip index is read
+    only once and shared, and the entry offsets are computed lazily.
+    """
+
+    import zipfile
+
+    zf = zipfile.ZipFile(apk_path, "r")
+    infolist = zf.infolist()
+
+    rv = [ ]
+
+    for prefix in prefixes:
+        apk = android.apk.APK.__new__(android.apk.APK)
+        apk.apk = apk_path
+        apk.zf = zf
+        apk.info = { }
+
+        for i in infolist:
+            if i.filename.startswith(prefix):
+                apk.info[i.filename[len(prefix):]] = i
+
+        apk.offset = _LazyOffsets(apk_path, apk.info)
+        rv.append(apk)
+
+    return rv
+
+
 try:
     import android.apk
+
+    _apks_start = time.time()
 
     expansion = os.environ.get("ANDROID_EXPANSION", None)
     if expansion is not None:
         print("Using expansion file", expansion)
-
-        apks = [
-            android.apk.APK(apk=expansion, prefix='assets/x-game/'),
-            android.apk.APK(apk=expansion, prefix='assets/x-renpy/x-common/'),
-            ]
-
-        game_apks = [ apks[0] ]
-
+        apk_path = expansion
     else:
         print("Not using expansion file.")
+        apk_path = None
+
+    try:
+        apks = _open_apks(
+            apk_path or os.environ["ANDROID_APK"],
+            [ 'assets/x-game/', 'assets/x-renpy/x-common/' ])
+
+    except Exception as e:
+        print("Fast apk index failed, using the default one:", repr(e))
 
         apks = [
-            android.apk.APK(prefix='assets/x-game/'),
-            android.apk.APK(prefix='assets/x-renpy/x-common/'),
+            android.apk.APK(apk=apk_path, prefix='assets/x-game/'),
+            android.apk.APK(apk=apk_path, prefix='assets/x-renpy/x-common/'),
             ]
 
-        game_apks = [ apks[0] ]
+    game_apks = [ apks[0] ]
+
+    startup_timings.append("Index apk ({} files) took {:.3f}s".format(
+        sum(len(i.info) for i in apks), time.time() - _apks_start))
 
 except ImportError:
     apks = [ ]
     game_apks = [ ]
+
+
+# Archives (.rpa) shipped inside the apk, as (apk path, offset of the archive
+# in the apk, index). They're checked after the loose apk files and before
+# the archives on disk.
+apk_archives = [ ]
+
+
+def _load_rpa_index(f):
+    """
+    Reads the index of an RPA-3.0 archive from the open file `f`.
+    """
+
+    l = f.readline()
+
+    if not l.startswith("RPA-3.0 "):
+        raise Exception("Only RPA-3.0 archives are supported in the apk.")
+
+    offset = int(l[8:24], 16)
+    key = int(l[25:33], 16)
+    f.seek(offset)
+    index = loads(zlib.decompress(f.read()))
+
+    for k in index.keys():
+        if len(index[k][0]) == 2:
+            index[k] = [ (offset ^ key, dlen ^ key) for offset, dlen in index[k] ]
+        else:
+            index[k] = [ (offset ^ key, dlen ^ key, start) for offset, dlen, start in index[k] ]
+
+    return index
+
+
+def _index_apk_archives():
+    import zipfile
+
+    start = time.time()
+
+    for apk in game_apks:
+        for fn in sorted(apk.info):
+
+            # Only archives at the top of the game directory
+            if "/" in fn or not fn.endswith(".rpa"):
+                continue
+
+            if apk.info[fn].compress_type != zipfile.ZIP_STORED:
+                print("Skipping compressed archive in the apk (add rpa to noCompress):", fn)
+                continue
+
+            try:
+                f = apk.open(fn)
+                index = _load_rpa_index(f)
+                f.close()
+
+                apk_archives.append((apk.apk, apk.offset[fn], index))
+
+                startup_timings.append("Index apk archive {} ({} files) took {:.3f}s".format(
+                    fn[2:], len(index), time.time() - start))
+
+            except Exception as e:
+                print("Could not index archive in the apk", fn, repr(e))
+
+
+if game_apks:
+    _index_apk_archives()
 
 # Files on disk should be checked before archives. Otherwise, among
 # other things, using a new version of bytecode.rpyb will break.
@@ -253,6 +389,12 @@ def scandirfiles():
             f = "/".join(i[2:] for i in f.split("/"))
 
             add(None, f)
+
+    files = game_files
+
+    for _apk_path, _base, index in apk_archives:
+        for j in index.iterkeys():
+            add(None, j)
 
     for i in renpy.config.searchpath:
 
@@ -481,6 +623,30 @@ def load_core(name):
         except IOError:
             pass
 
+    # Look for it in the archives inside the apk.
+    for apk_path, base, index in apk_archives:
+        if name not in index:
+            continue
+
+        if len(index[name]) == 1:
+            t = index[name][0]
+            if len(t) == 2:
+                offset, dlen = t
+                start = ''
+            else:
+                offset, dlen, start = t
+
+            return SubFile(apk_path, base + offset, dlen, start)
+
+        with open(apk_path, "rb") as f:
+            data = [ ]
+
+            for t in index[name]:
+                f.seek(base + t[0])
+                data.append(f.read(t[1]))
+
+        return StringIO(''.join(data))
+
     # Look for it in archive files.
     for prefix, index in archives:
         if not name in index:
@@ -568,6 +734,11 @@ def loadable_core(name):
     for apk in apks:
         prefixed_name = "/".join("x-" + i for i in name.split("/"))
         if prefixed_name in apk.info:
+            return True
+
+    for _apk_path, _base, index in apk_archives:
+        if name in index:
+            loadable_cache[name] = True
             return True
 
     try:
