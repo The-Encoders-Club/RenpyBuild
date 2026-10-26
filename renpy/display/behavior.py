@@ -32,6 +32,10 @@ import pygame_sdl2 as pygame
 import math
 import time
 
+# Smallest size, in virtual pixels, of the area that a finger can tap to edit a text input
+TOUCH_INPUT_MIN_WIDTH = 360
+TOUCH_INPUT_MIN_HEIGHT = 60
+
 
 def compile_event(key, keydown):
     """
@@ -1243,9 +1247,8 @@ class Input(renpy.text.text.Text):  # @UndefinedVariable
         # On Android: tap inside input hitbox acts as an interactive button
         if getattr(renpy, "android", False):
             if ev.type == pygame.MOUSEBUTTONUP and getattr(ev, "button", None) == 1:
-                hit_x = 0 <= x < getattr(self, "focus_w", 530)
-                hit_y = 0 <= y < getattr(self, "focus_h", 40)
-                if self.is_focused() or (hit_x and hit_y):
+                hit_x, hit_y, hit_w, hit_h = getattr(self, "hitbox", (0, 0, 0, 0))
+                if hit_x <= x < hit_x + hit_w and hit_y <= y < hit_y + hit_h:
                     sound = getattr(getattr(renpy.store, "gui", None), "activate_sound", None)
                     is_kb_shown = False
                     if hasattr(pygame.key, "is_screen_keyboard_shown"):
@@ -1380,12 +1383,14 @@ class Input(renpy.text.text.Text):  # @UndefinedVariable
         rv = super(Input, self).render(width, height, st, at)
 
         if getattr(renpy, "android", False):
-            # Dynamic touch hitbox on Android: covers the full container width or rendered size
-            focus_w = max(rv.width, self.pixel_width or 0, width if (0 < width < 4000) else 0, 530)
-            focus_h = max(rv.height, height if (0 < height < 500) else 0, 40)
-            self.focus_w = focus_w
-            self.focus_h = focus_h
-            rv.add_focus(self, None, 0, 0, focus_w, focus_h)
+            # Touch hitbox: the rendered text grown evenly on every side up to a finger sized minimum,
+            # never to the space the container offers, or it would cover the buttons around the box
+            hit_w = int(max(rv.width, self.pixel_width or 0, TOUCH_INPUT_MIN_WIDTH))
+            hit_h = int(max(rv.height, TOUCH_INPUT_MIN_HEIGHT))
+            hit_x = -(hit_w - rv.width) // 2
+            hit_y = -(hit_h - rv.height) // 2
+            self.hitbox = (hit_x, hit_y, hit_w, hit_h)
+            rv.add_focus(self, None, hit_x, hit_y, hit_w, hit_h)
 
         if self.editable:
             rv.text_input = True
