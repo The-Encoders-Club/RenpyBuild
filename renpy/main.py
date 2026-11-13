@@ -553,6 +553,30 @@ def main():
         except Exception:
             pass
 
+        # Code that opens https with the default context (urllib2.urlopen, as the Submod Updater Plugin does)
+        # gets the default verify paths of OpenSSL, which point nowhere on Android, so every request fails with
+        # CERTIFICATE_VERIFY_FAILED. Code that passes a cafile itself (MAICA) is not affected. The default
+        # context also loads the bundle that comes with the game, so any submod can reach https as it would on PC.
+        try:
+            import ssl
+            _cacert_default = os.path.join(renpy.config.gamedir, "python-packages", "certifi", "cacert.pem")
+            if hasattr(ssl, "SSLContext") and not getattr(ssl.SSLContext.load_default_certs, "_mas_cacert", False):
+                os.environ.setdefault("SSL_CERT_FILE", _cacert_default)
+                _orig_load_default_certs = ssl.SSLContext.load_default_certs
+
+                def _load_default_certs_with_cacert(self, purpose=ssl.Purpose.SERVER_AUTH):
+                    _orig_load_default_certs(self, purpose)
+                    if purpose == ssl.Purpose.SERVER_AUTH and os.path.exists(_cacert_default):
+                        try:
+                            self.load_verify_locations(cafile=_cacert_default)
+                        except Exception:
+                            pass
+
+                _load_default_certs_with_cacert._mas_cacert = True
+                ssl.SSLContext.load_default_certs = _load_default_certs_with_cacert
+        except Exception:
+            pass
+
     # Start auto-loading.
     renpy.loader.auto_init()
 
