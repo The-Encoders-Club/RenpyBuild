@@ -499,6 +499,25 @@ public class PythonSDLActivity extends SDLActivity implements AssetPackStateUpda
     protected void onDestroy() {
         Log.v("python", "onDestroy()");
 
+        // super.onDestroy() waits for the SDL thread to end. If the game is stuck (for example
+        // after a broken PiP exit) that wait never finishes and the frozen process blocks the
+        // next launch, so when the game is closing the process is killed after a few seconds
+        if (isFinishing()) {
+            Thread watchdog = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    android.os.Process.killProcess(android.os.Process.myPid());
+                }
+            }, "MASDestroyWatchdog");
+            watchdog.setDaemon(true);
+            watchdog.start();
+        }
+
         super.onDestroy();
 
         if (mStore != null) {
@@ -611,10 +630,71 @@ public class PythonSDLActivity extends SDLActivity implements AssetPackStateUpda
 
     private void handlePipOrientationChange(boolean isInPictureInPictureMode) {
         android.util.Log.d("MAS_PIP", "handlePipOrientationChange: isInPictureInPictureMode=" + isInPictureInPictureMode);
+        if (!isInPictureInPictureMode) {
+            resyncSurfaceAfterPip();
+        }
         try {
             getWindow().getDecorView().requestLayout();
         } catch (Exception e) {
             android.util.Log.e("MAS_PIP", "Error requesting layout in handlePipOrientationChange: " + e.toString());
+        }
+    }
+
+    private static android.view.SurfaceView findSurfaceViewIn(android.view.View view) {
+        if (view instanceof android.view.SurfaceView) {
+            return (android.view.SurfaceView) view;
+        }
+        if (view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                android.view.SurfaceView found = findSurfaceViewIn(group.getChildAt(i));
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Leaving PiP can leave the game drawn at the size of the small window, with the touches
+     * out of place, when the system also changes the orientation. Once the window has its final
+     * size, the surface follows the layout again and SDL (so Ren'Py) is told the real size.
+     * It runs twice because the window is not always at its final size after the first pass.
+     */
+    private void resyncSurfaceAfterPip() {
+        android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        int[] delays = { 350, 1000 };
+
+        for (int i = 0; i < delays.length; i++) {
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (isFinishing() || isInPictureInPictureMode() || mSDLThread == null || mFrameLayout == null) {
+                            return;
+                        }
+
+                        android.view.SurfaceView surface = findSurfaceViewIn(mFrameLayout);
+                        if (surface == null) {
+                            return;
+                        }
+
+                        surface.getHolder().setSizeFromLayout();
+                        surface.requestLayout();
+
+                        int width = surface.getWidth();
+                        int height = surface.getHeight();
+                        if (width > 0 && height > 0) {
+                            float rate = getWindowManager().getDefaultDisplay().getRefreshRate();
+                            SDLActivity.nativeSetScreenResolution(width, height, width, height, rate);
+                            SDLActivity.onNativeResize();
+                        }
+                    } catch (Exception e) {
+                        android.util.Log.e("MAS_PIP", "Error resyncing the surface after PiP: " + e.toString());
+                    }
+                }
+            }, delays[i]);
         }
     }
 
