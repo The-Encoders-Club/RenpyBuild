@@ -18,6 +18,7 @@ import android.text.SpannableString;
 import android.text.style.UnderlineSpan;
 import android.app.Activity;
 import android.app.ActivityManager;
+import java.util.Arrays;
 import java.util.List;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -1231,6 +1232,7 @@ public class PermissionGateActivity extends Activity {
     }
 
     private void createExternalStorageDirectories() {
+        cleanOldPortFiles();
         try {
             File extDir = Environment.getExternalStorageDirectory();
             String appDirName = getAppName();
@@ -1277,16 +1279,18 @@ public class PermissionGateActivity extends Activity {
         }
     }
 
-    // What the previous port (Ren'Py 7) leaves in the public folder. Its notification records are always
-    // written, so records.txt tells that the folder comes from that port. Everything it compiled or cached
-    // is deleted so the game builds it again clean, and records.txt goes last so a cut cleaning is retried
-    private static final String[] OLD_PORT_ROOT_FILES = { "log.txt", "traceback.txt", "records.txt", "diag_pickle.txt", "errors.txt", "masrun" };
+    // What the previous port (Ren'Py 7) leaves in the public folder. It always wrote records.txt (and diag_pickle.txt),
+    // so one of them, or a copy a file manager made of it (records(1).txt), says the folder comes from that port.
+    // The cleaning runs while Ren'Py is still asleep and before the folders are created again, so everything the
+    // game writes afterwards is new: the whole log folder, every .txt of the main folder, the caches of the game
+    // folder and every compiled .rpyc. The markers go last, so a cut cleaning is tried again next start.
     private static final String[] OLD_PORT_GAME_FILES = {
             "log.txt", "traceback.txt", "diag_pickle.txt", "assets.json", "state.json", "submods.rpa"
     };
-    // Hidden files of the old services, in the log folder. .data is not here: it keeps the picture in
-    // picture choice and the new port writes the same file
-    private static final String[] OLD_PORT_LOG_FILES = { ".awareness", ".discord_rpc", ".discord_token" };
+
+    private static boolean isOldPortMarker(String name) {
+        return name.matches("(?i)(records|diag_pickle)(\\s?\\(\\d+\\))?\\.txt");
+    }
 
     private void cleanOldPortFiles() {
         try {
@@ -1295,32 +1299,66 @@ public class PermissionGateActivity extends Activity {
             }
 
             File root = new File(Environment.getExternalStorageDirectory(), getAppName());
-            File marker = new File(root, "records.txt");
-            if (!marker.exists()) {
+            File[] rootFiles = root.listFiles();
+            if (rootFiles == null) {
                 return;
             }
 
+            boolean oldPort = false;
+            for (File f : rootFiles) {
+                if (f.isFile() && isOldPortMarker(f.getName())) {
+                    oldPort = true;
+                    break;
+                }
+            }
+            if (!oldPort) {
+                return;
+            }
+
+            // 1. the log folder, whole
+            deleteTree(new File(root, "log"));
+
+            // 2. caches and compiled scripts of the game folder
             File game = new File(root, "game");
-            for (String name : OLD_PORT_ROOT_FILES) {
-                new File(root, name).delete();
+            File[] gameFiles = game.listFiles();
+            if (gameFiles != null) {
+                for (File f : gameFiles) {
+                    String name = f.getName();
+                    if (f.isFile() && (isOldPortMarker(name) || Arrays.asList(OLD_PORT_GAME_FILES).contains(name))) {
+                        f.delete();
+                    }
+                }
             }
-            for (String name : OLD_PORT_GAME_FILES) {
-                new File(game, name).delete();
-            }
-
-            File logDir = new File(root, "log");
-
-            for (String name : OLD_PORT_LOG_FILES) {
-                new File(logDir, name).delete();
-            }
-
             int rpyc = deleteCompiledScripts(game);
-            new File(root, "records_old.txt").delete();
-            marker.delete();
+
+            // 3. the .txt of the main folder (markers last) and the leftovers of the old services
+            for (File f : rootFiles) {
+                String name = f.getName();
+                boolean txt = name.toLowerCase().endsWith(".txt");
+                if (f.isFile() && (txt || name.startsWith("masrun")) && !isOldPortMarker(name)) {
+                    f.delete();
+                }
+            }
+            for (File f : rootFiles) {
+                if (f.isFile() && isOldPortMarker(f.getName())) {
+                    f.delete();
+                }
+            }
             Log.i(TAG, "Old port files cleaned, " + rpyc + " rpyc deleted");
         } catch (Throwable e) {
             Log.e(TAG, "Could not clean the files of the old port", e);
         }
+    }
+
+    /** Deletes a file or a folder with everything inside. */
+    private void deleteTree(File f) {
+        File[] children = f.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteTree(child);
+            }
+        }
+        f.delete();
     }
 
     /** Deletes every .rpyc under dir (the engine compiles them again). RETURNS how many were deleted. */
@@ -1342,7 +1380,6 @@ public class PermissionGateActivity extends Activity {
     }
 
     private void launchPythonSDLActivity() {
-        cleanOldPortFiles();
         try {
             Intent intent = new Intent(this, PythonSDLActivity.class);
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
