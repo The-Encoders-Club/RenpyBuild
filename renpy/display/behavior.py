@@ -1389,6 +1389,19 @@ class Input(renpy.text.text.Text):  # @UndefinedVariable
             hit_h = int(max(rv.height, TOUCH_INPUT_MIN_HEIGHT))
             hit_x = -(hit_w - rv.width) // 2
             hit_y = -(hit_h - rv.height) // 2
+
+            # An input whose maximum size is smaller than the finger sized minimum (a search bar next to
+            # other buttons) gets a tap area of that size, from the start of the text and centered on its
+            # height, so it never goes outside its box. A larger maximum, like the one every input inherits
+            # from the style of the game, changes nothing.
+            xmax = getattr(self.style, "xmaximum", None)
+            ymax = getattr(self.style, "ymaximum", None)
+            if isinstance(xmax, (int, long)) and not isinstance(xmax, bool) and 0 < xmax < hit_w:
+                hit_x, hit_w = 0, int(xmax)
+            if isinstance(ymax, (int, long)) and not isinstance(ymax, bool) and 0 < ymax < hit_h:
+                hit_h = int(ymax)
+                hit_y = -(hit_h - rv.height) // 2
+
             self.hitbox = (hit_x, hit_y, hit_w, hit_h)
             rv.add_focus(self, None, hit_x, hit_y, hit_w, hit_h)
 
