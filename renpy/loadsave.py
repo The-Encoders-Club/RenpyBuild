@@ -594,6 +594,21 @@ def load(filename):
     log.unfreeze(roots, label="_after_load")
 
 
+def can_unpickle(filename):
+    """
+    Returns true if the save slot `filename` can be read back, and false if it can't (for
+    example, it was saved while the game had functions defined by running code and
+    those no longer exist after a restart). It does not change the game state.
+    """
+
+    try:
+        loads(location.load(filename))
+    except Exception:
+        return False
+
+    return True
+
+
 def unlink_save(filename):
     """
     :doc: loadsave

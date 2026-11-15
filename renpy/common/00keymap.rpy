@@ -434,6 +434,12 @@ label _load_reload_game:
         ui.pausebehavior(0)
         ui.interact(suppress_underlay=True, suppress_overlay=True)
 
-        renpy.load("_reload-2")
+        # A reload save that can not be read (for example, the game was closed by Android
+        # in the background while it had functions made by running code) is dropped,
+        # and the game starts normally instead of stopping with an exception.
+        if renpy.loadsave.can_unpickle("_reload-2"):
+            renpy.load("_reload-2")
+        else:
+            renpy.loadsave.unlink_save("_reload-2")
 
     return
