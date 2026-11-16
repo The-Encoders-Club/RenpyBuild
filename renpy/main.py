@@ -294,6 +294,41 @@ def choose_variants():
         renpy.config.variants.insert(0, 'large')
 
 
+def ensure_cacert(target, read_asset):
+    """
+    Makes sure the cacert.pem of the game is on the storage, because the native OpenSSL needs a real file.
+
+    The loader looks for a file on the disk before it looks in the apk, so the original has to be read BEFORE
+    the file is created: creating it first made the loader find the new empty file and copy 0 bytes. A cacert.pem
+    that is already empty (made that way) is deleted and made again.
+
+    IN:
+        target - path of the cacert.pem on the storage
+        read_asset - function that returns the bytes of the original, or None if there is none
+
+    OUT:
+        True if the file was written
+    """
+    if os.path.isfile(target) and os.path.getsize(target) == 0:
+        os.remove(target)
+
+    if os.path.exists(target):
+        return False
+
+    data = read_asset()
+    if not data:
+        return False
+
+    target_dir = os.path.dirname(target)
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir, 0o777)
+
+    with open(target, "wb") as f:
+        f.write(data)
+
+    return True
+
+
 def main():
 
     log_clock("Bootstrap to the start of init.init")
@@ -542,14 +577,11 @@ def main():
         # Guarantee physical cacert.pem on storage for native OpenSSL SSLContext
         try:
             cacert_target = os.path.join(renpy.config.gamedir, "python-packages", "certifi", "cacert.pem")
-            if not os.path.exists(cacert_target):
-                cacert_asset = "python-packages/certifi/cacert.pem"
-                if renpy.loader.loadable(cacert_asset):
-                    target_dir = os.path.dirname(cacert_target)
-                    if not os.path.exists(target_dir):
-                        os.makedirs(target_dir, 0o777)
-                    with open(cacert_target, "wb") as f:
-                        f.write(renpy.loader.load(cacert_asset).read())
+            cacert_asset = "python-packages/certifi/cacert.pem"
+            ensure_cacert(
+                cacert_target,
+                lambda: renpy.loader.load(cacert_asset).read() if renpy.loader.loadable(cacert_asset) else None
+            )
         except Exception:
             pass
 
