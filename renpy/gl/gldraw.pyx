@@ -682,9 +682,13 @@ cdef class GLDraw:
         if surf in self.texture_cache:
             del self.texture_cache[surf]
 
-    def load_texture(self, surf, transient=False):
+    def load_texture(self, surf, transient=False, properties=None):
         """
         Loads a texture into memory.
+
+        `properties`
+            None or a dict. The key "opaque" says the surface is fully
+            opaque, which makes loading it cheaper (video frames).
         """
 
         # Turn a surface into a texture grid.
@@ -692,7 +696,8 @@ cdef class GLDraw:
         rv = self.texture_cache.get(surf, None)
 
         if rv is None:
-            rv = gltexture.texture_grid_from_surface(surf, transient)
+            opaque = bool(properties and properties.get("opaque", False))
+            rv = gltexture.texture_grid_from_surface(surf, transient, opaque)
             self.texture_cache[surf] = rv
 
         return rv

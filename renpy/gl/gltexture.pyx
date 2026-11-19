@@ -312,10 +312,15 @@ cdef class TextureCore:
 
 
     def load_surface(self, surf, x, y, w, h,
-                     border_left, border_top, border_right, border_bottom):
+                     border_left, border_top, border_right, border_bottom,
+                     opaque=False):
 
         """
         Loads a pygame surface into this texture rectangle.
+
+        `opaque`
+            True if the surface is known to be fully opaque (a video frame
+            without a mask), so its alpha does not have to be read.
         """
 
         # This just queues the surface up for loading. The actual loading
@@ -324,7 +329,8 @@ cdef class TextureCore:
 
         self.premult = premultiply(
             surf, x, y, w, h,
-            border_left, border_top, border_right, border_bottom)
+            border_left, border_top, border_right, border_bottom,
+            opaque)
 
         self.premult_size = (w, h)
 
@@ -781,9 +787,12 @@ def compute_tiling(width, max_size, min_fill_factor):
     return row, tiles
 
 
-def texture_grid_from_surface(surf, transient):
+def texture_grid_from_surface(surf, transient, opaque=False):
     """
     This takes a Surface and turns it into a TextureGrid.
+
+    `opaque`
+        True if the surface is fully opaque, see TextureCore.load_surface.
     """
 
     if transient:
@@ -822,7 +831,8 @@ def texture_grid_from_surface(surf, transient):
 
             tex = alloc_texture(texwidth, texheight)
             tex.load_surface(surf, x, y, width, height,
-                             border_left, border_top, border_right, border_bottom)
+                             border_left, border_top, border_right, border_bottom,
+                             opaque)
 
             row.append(tex)
 
@@ -1092,12 +1102,18 @@ def premultiply(
     int y,
     int w,
     int h,
-    bint border_left, bint border_top, bint border_right, bint border_bottom):
+    bint border_left, bint border_top, bint border_right, bint border_bottom,
+    bint opaque=False):
 
     """
     Creates a string containing the premultiplied image data for
     for the (x, y, w, h) box inside pysurf. The various border_
     parameters control the addition of a border on the sides.
+
+    `opaque`
+        If true, the surface is fully opaque (a video frame without a mask),
+        so the data is copied without multiplying it by its alpha, the same
+        way as a surface that has no alpha channel.
     """
 
     # Iterator y and x.
@@ -1106,7 +1122,7 @@ def premultiply(
     # Does the original image have an alpha channel?
     cdef unsigned int alpha
 
-    if pysurf.get_masks()[3]:
+    if pysurf.get_masks()[3] and not opaque:
         alpha = True
     else:
         alpha = False

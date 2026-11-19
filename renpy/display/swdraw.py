@@ -1059,7 +1059,7 @@ class SWDraw(object):
         if surf in rle_cache:
             del rle_cache[surf]
 
-    def load_texture(self, surf, transient=False):
+    def load_texture(self, surf, transient=False, properties=None):
         """
         Creates a texture from the surface. In the software implementation,
         the only difference between a texture and a surface is that a texture

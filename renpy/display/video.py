@@ -157,7 +157,14 @@ def get_movie_texture(channel, mask_channel=None):
 
     if surf is not None:
         renpy.display.render.mutated_surface(surf)
-        tex = renpy.display.draw.load_texture(surf, True)
+        # A video frame without a mask has no alpha, so loading it can skip
+        # multiplying every pixel by its alpha.
+        try:
+            tex = renpy.display.draw.load_texture(surf, True, {"opaque": not mask_channel})
+        except TypeError:
+            # Binaries built before load_texture took the properties.
+            tex = renpy.display.draw.load_texture(surf, True)
+
         texture[channel] = tex
         new = True
     else:
