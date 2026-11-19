@@ -47,6 +47,9 @@ cdef class GLDraw:
     cdef tuple clip_cache
     cdef bint fast_dissolve
     cdef bint always_opaque
+    cdef bint fbo_pixel_test
+    cdef bint fbo_pixel_probed
+    cdef int fbo_pixel_logged
     cdef bint allow_fixed
     cdef tuple default_clip
     cdef bint did_render_to_texture

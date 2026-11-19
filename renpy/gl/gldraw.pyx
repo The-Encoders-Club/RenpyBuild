@@ -80,6 +80,18 @@ flip_times = [ ]
 # A list of frame end times, used for the same purpose.
 frame_times = [ ]
 
+cdef int read_pixel_alpha():
+    """
+    Returns the alpha (0-255) of the pixel at 0, 0 of the framebuffer that is
+    currently bound.
+    """
+
+    cdef unsigned char pixel[4]
+
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel)
+
+    return pixel[3]
+
 cdef class GLDraw:
 
     def __init__(self, allow_fixed=True):
@@ -140,6 +152,13 @@ cdef class GLDraw:
 
         # Should we always report pixels as being always opaque?
         self.always_opaque = renpy.android
+
+        # Android: when always_opaque is on, should we still try to read the real alpha of a
+        # pixel through a framebuffer object? It is turned off if the probe or a read fails,
+        # and then every pixel is opaque again, as it was before.
+        self.fbo_pixel_test = True
+        self.fbo_pixel_probed = False
+        self.fbo_pixel_logged = 0
 
         # Should we allow the fixed-function environment?
         self.allow_fixed = allow_fixed
@@ -1066,6 +1085,36 @@ cdef class GLDraw:
             return 0
 
         if self.always_opaque:
+
+            # On Android the framebuffer of the screen has no alpha channel, so reading it always
+            # gives 255 and a focus_mask turns into the whole rectangle of the mask. The alpha is
+            # read from a framebuffer object with an RGBA texture instead, which is what the
+            # desktop does with the real alpha. Any failure goes back to "everything is opaque".
+            if self.fbo_pixel_test:
+                try:
+                    if not self.fbo_pixel_probed:
+                        self.fbo_pixel_probed = True
+
+                        if self.pixel_alpha_fbo_probe():
+                            renpy.display.log.write("Pixel test through FBO: ok.")
+                        else:
+                            self.fbo_pixel_test = False
+                            renpy.display.log.write("Pixel test through FBO: the probe failed, every pixel stays opaque.")
+
+                    if self.fbo_pixel_test:
+                        a = self.pixel_alpha_fbo(what, x, y)
+
+                        # Remove the next lines once the behavior is confirmed on a device.
+                        if self.fbo_pixel_logged < 12:
+                            self.fbo_pixel_logged += 1
+                            renpy.display.log.write("Pixel test through FBO: (%d, %d) -> alpha %d", x, y, a)
+
+                        return a
+
+                except Exception as e:
+                    self.fbo_pixel_test = False
+                    renpy.display.log.write("Pixel test through FBO failed (%r), every pixel stays opaque.", e)
+
             return 255
 
         what = what.subsurface((x, y, 1, 1))
@@ -1100,6 +1149,79 @@ cdef class GLDraw:
         what.kill()
 
         return a
+
+
+    def pixel_alpha_fbo_probe(self):
+        """
+        Checks, once, that a framebuffer object with an RGBA texture gives a real alpha
+        channel: clearing it to alpha 1 must read 255 and clearing it to alpha 0 must read 0.
+        Returns True if both are right.
+        """
+
+        # See get_half for why this is done.
+        cdef GLDraw draw = self
+
+        tex = gltexture.alloc_texture(1, 1)
+        seen = [ ]
+
+        def draw_func(x, y, w, h):
+
+            draw.clip_mode_rtt(0, 0, 1, 1)
+
+            glClearColor(0.0, 0.0, 0.0, 1.0)
+            glClear(GL_COLOR_BUFFER_BIT)
+            seen.append(read_pixel_alpha())
+
+            glClearColor(0.0, 0.0, 0.0, 0.0)
+            glClear(GL_COLOR_BUFFER_BIT)
+            seen.append(read_pixel_alpha())
+
+        tex.render_to(0, 0, draw_func, self.rtt, self.environ)
+
+        return seen == [ 255, 0 ]
+
+
+    def pixel_alpha_fbo(self, what, x, y):
+        """
+        Returns the alpha (0-255) of the pixel x, y of `what`, drawing it into a 1x1 RGBA
+        texture through the framebuffer object. Only used when always_opaque is on (Android).
+        """
+
+        # See get_half for why this is done.
+        cdef GLDraw draw = self
+
+        what = what.subsurface((x, y, 1, 1))
+        reverse = IDENTITY
+
+        tex = gltexture.alloc_texture(1, 1)
+        rv = [ 255 ]
+
+        def draw_func(tx, ty, tw, th):
+
+            draw.clip_mode_rtt(0, 0, 1, 1)
+
+            glClearColor(0.0, 0.0, 0.0, 0.0)
+            glClear(GL_COLOR_BUFFER_BIT)
+
+            draw.draw_transformed(what, (0, 0, 1, 1), 0, 0, 1.0, 1.0, reverse, renpy.config.nearest_neighbor, False)
+
+            rv[0] = read_pixel_alpha()
+
+        try:
+            # We need to render a second time if a render-to-texture occurs, as it
+            # has overwritten the framebuffer object we're drawing to.
+            for _i in range(2):
+                draw.did_render_to_texture = False
+
+                tex.render_to(0, 0, draw_func, self.rtt, self.environ)
+
+                if not draw.did_render_to_texture:
+                    break
+
+        finally:
+            what.kill()
+
+        return rv[0]
 
 
     def get_half(self, what):
