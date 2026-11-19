@@ -770,6 +770,15 @@ needs_redraw_callbacks = [ ]
 # and the threshold of 2020). Python's default thresholds (700, 10, 10) make the collector run in the
 # middle of a click on a big game, so Ren'Py raises them and collects while it is idle instead.
 
+# Should we optimize textures by uploading only the rectangle of an image that is not transparent?
+# (Backported from Ren'Py 7.0: commits ec9dd801c, 9812c00db and a1745cd7f of January 2018, and the expansion of
+# the bounds of December 2020, in the form they have in 7.8.7.) A character sprite is a layer as big as the screen
+# of which only a small part is visible, so drawing the whole layer wastes most of the work of the GPU.
+optimize_texture_bounds = True
+
+# How much should the texture bounds be expanded by?
+expand_texture_bounds = 8
+
 # Should Ren'Py manage GC itself?
 manage_gc = True
 

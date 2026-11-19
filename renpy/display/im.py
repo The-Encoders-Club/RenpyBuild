@@ -33,6 +33,23 @@ import threading
 import time
 
 
+def expand_bounds(bounds, size, amount):
+    """
+    This expands the rectangle bounds by amount, while ensuring it fits inside size.
+    (From Ren'Py 7.x.)
+    """
+
+    x, y, w, h = bounds
+    sx, sy = size
+
+    x0 = max(0, x - amount)
+    y0 = max(0, y - amount)
+    x1 = min(sx, x + w + amount)
+    y1 = min(sy, y + h + amount)
+
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
 # This is an entry in the image cache.
 class CacheEntry(object):
 
@@ -51,6 +68,12 @@ class CacheEntry(object):
 
         # The time when this cache entry was last used.
         self.time = 0
+
+        # The part of surf that is uploaded to the GPU (a subsurface with the rectangle of the image that is not
+        # transparent) and where it goes inside surf. They are worked out the first time the image is drawn,
+        # see Cache.get_trimmed.
+        self.texsurf = None
+        self.bounds = None
 
 # This is the singleton image cache.
 
@@ -234,6 +257,55 @@ class Cache(object):
         # Done... return the surface.
         return ce.surf
 
+    def get_trimmed(self, image, predict=False):
+        """
+        Returns (surf, (x, y), (width, height)) for `image`: the surface to turn into a texture, the place of
+        it inside the whole image, and the size of the whole image. When renpy.config.optimize_texture_bounds
+        is true the surface is only the rectangle of the image that is not transparent, so the GPU does not
+        draw (and the CPU does not upload) the transparent margins. (Backported from Ren'Py 7.x, where it is
+        done inside Cache.get.)
+        """
+
+        surf = self.get(image, predict=predict)
+
+        if not renpy.config.optimize_texture_bounds:
+            return surf, (0, 0), surf.get_size()
+
+        ce = self.cache.get(image, None)
+
+        # Images that are not cached (image.cache is false) are not optimized.
+        if (ce is None) or (ce.surf is not surf):
+            return surf, (0, 0), surf.get_size()
+
+        if ce.texsurf is None:
+
+            with self.lock:
+
+                if ce.texsurf is None:
+
+                    w, h = size = surf.get_size()
+                    texsurf = surf
+                    bounds = (0, 0, w, h)
+
+                    try:
+                        rect = tuple(surf.get_bounding_rect())
+                        rect = expand_bounds(rect, size, renpy.config.expand_texture_bounds)
+
+                        # Nothing visible, or nothing to cut: draw the whole surface as before.
+                        if rect[2] > 0 and rect[3] > 0 and rect != bounds:
+                            texsurf = surf.subsurface(rect)
+                            renpy.display.render.mutated_surface(texsurf)
+                            bounds = rect
+
+                    except Exception:
+                        texsurf = surf
+                        bounds = (0, 0, w, h)
+
+                    ce.bounds = bounds
+                    ce.texsurf = texsurf
+
+        return ce.texsurf, ce.bounds[:2], surf.get_size()
+
     # This kills off a given cache entry.
     def kill(self, ce):
 
@@ -243,6 +315,9 @@ class Cache(object):
 
         # Let the texture cache know we're not needed.
         renpy.display.draw.mutated_surface(ce.surf)
+
+        if (ce.texsurf is not None) and (ce.texsurf is not ce.surf):
+            renpy.display.draw.mutated_surface(ce.texsurf)
 
         self.total_cache_size -= ce.size
         del self.cache[ce.what]
@@ -286,7 +361,7 @@ class Cache(object):
         into the GPU.
         """
 
-        surf = self.get(im, predict=True)
+        surf, _offset, _size = self.get_trimmed(im, predict=True)
         renpy.display.draw.load_texture(surf)
 
     # Called to report that a given image would like to be preloaded.
@@ -470,12 +545,12 @@ class ImageBase(renpy.display.core.Displayable):
 
     def render(self, w, h, st, at):
 
-        im = cache.get(self)
+        im, offset, size = cache.get_trimmed(self)
         texture = renpy.display.draw.load_texture(im)
 
-        w, h = im.get_size()
+        w, h = size
         rv = renpy.display.render.Render(w, h)
-        rv.blit(texture, (0, 0))
+        rv.blit(texture, offset)
         return rv
 
     def predict_one(self):
