@@ -21,6 +21,7 @@
 
 from __future__ import print_function
 
+import zlib
 import os
 import copy
 import time
@@ -389,7 +390,8 @@ def save():
         return
 
     try:
-        data = dumps(renpy.game.persistent).encode("zlib")
+        # level 1 is a lot faster than the default 6 and the file is only a bit bigger
+        data = zlib.compress(dumps(renpy.game.persistent), 1)
         renpy.loadsave.location.save_persistent(data)
     except:
         if renpy.config.developer:
