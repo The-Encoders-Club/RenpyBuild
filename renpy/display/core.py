@@ -36,6 +36,7 @@ import time
 import cStringIO
 import threading
 import copy
+import gc
 
 import_time = time.time()
 
@@ -2597,6 +2598,32 @@ class Interface(object):
 
             renpy.game.context().scene_lists.shown_window = False
 
+    def consider_gc(self):
+        """
+        Considers if we should perform a garbage collection. It is called when the interface is idle and
+        at the end of an interaction, so the collector does not run in the middle of a click.
+        (Backported from Ren'Py 7.x.)
+        """
+
+        if not renpy.config.manage_gc:
+            return
+
+        count = gc.get_count()
+
+        if count[0] >= renpy.config.idle_gc_count:
+
+            if count[2] >= renpy.config.gc_thresholds[2]:
+                gen = 2
+            elif count[1] >= renpy.config.gc_thresholds[1]:
+                gen = 1
+            else:
+                gen = 0
+
+            gc.collect(gen)
+
+            if gc.garbage:
+                del gc.garbage[:]
+
     def interact_core(self,
                       show_mouse=True,
                       trans_pause=False,
@@ -3046,6 +3073,10 @@ class Interface(object):
                         pygame.time.set_timer(TIMEEVENT, int(time_left * 1000 + 1))
                         old_timeout_time = self.timeout_time
 
+                # Collect garbage while there is nothing else to do.
+                if not self.event_peek():
+                    self.consider_gc()
+
                 # Predict images, if we haven't done so already.
                 while prediction_coroutine is not None:
 
@@ -3318,6 +3349,8 @@ class Interface(object):
 
             pygame.time.set_timer(TIMEEVENT, 0)
             pygame.time.set_timer(REDRAW, 0)
+
+            self.consider_gc()
 
             renpy.game.context().runtime += end_time - start_time
 

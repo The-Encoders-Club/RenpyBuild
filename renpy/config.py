@@ -766,6 +766,19 @@ prefix_viewport_scrollbar_styles = True
 # These functions are called to determine if Ren'Py needs to redraw the screen.
 needs_redraw_callbacks = [ ]
 
+# Garbage collection, backported from Ren'Py 7.x (the commits of November 2017 to January 2018
+# and the threshold of 2020). Python's default thresholds (700, 10, 10) make the collector run in the
+# middle of a click on a big game, so Ren'Py raises them and collects while it is idle instead.
+
+# Should Ren'Py manage GC itself?
+manage_gc = True
+
+# Default thresholds that apply to garbage collection.
+gc_thresholds = (25000, 10, 10)
+
+# The threshold for a level 0 gc when we have the time.
+idle_gc_count = 2500
+
 del renpy
 del os
 

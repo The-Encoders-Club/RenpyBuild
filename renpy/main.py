@@ -27,6 +27,7 @@ import renpy.test
 
 import renpy.game as game
 
+import gc
 import os
 import sys
 import time
@@ -330,6 +331,9 @@ def ensure_cacert(target, read_asset):
 
 
 def main():
+
+    # Startup creates a lot of objects, so collecting less often makes it faster.
+    gc.set_threshold(*renpy.config.gc_thresholds)
 
     log_clock("Bootstrap to the start of init.init")
 
@@ -778,6 +782,19 @@ def main():
         # Make a clean copy of the store.
         renpy.python.make_clean_stores()
         log_clock("Making clean stores")
+
+        # One full collection when the game is loaded, then the thresholds the game runs with.
+        gc.collect(2)
+
+        if gc.garbage:
+            del gc.garbage[:]
+
+        if renpy.config.manage_gc:
+            gc.set_threshold(*renpy.config.gc_thresholds)
+        else:
+            gc.set_threshold(700, 10, 10)
+
+        log_clock("Initial gc")
 
         # (Perhaps) Initialize graphics.
         if not game.interface:
