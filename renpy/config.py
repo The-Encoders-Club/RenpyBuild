@@ -788,6 +788,17 @@ gc_thresholds = (25000, 10, 10)
 # The threshold for a level 0 gc when we have the time.
 idle_gc_count = 2500
 
+# How many level 1 collections have to happen, when the game is idle, before a level 2 (full) one is done. A full
+# collection looks at every object of the game (200 ms or more with a big game like MAS), so it is done much
+# less often than the level 0 and 1 ones. (The third value of gc_thresholds is still the one the automatic
+# collector uses.)
+idle_gc_full_count = 30
+
+# Should a full garbage collection be done when the game has finished loading? It takes 200 ms or more with a big
+# game like MAS, which is added to the start up time. Without it the objects made while loading stay in the young
+# generations a little longer, so the first collections of the game may take longer.
+startup_full_gc = False
+
 del renpy
 del os
 

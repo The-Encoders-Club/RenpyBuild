@@ -2612,7 +2612,7 @@ class Interface(object):
 
         if count[0] >= renpy.config.idle_gc_count:
 
-            if count[2] >= renpy.config.gc_thresholds[2]:
+            if count[2] >= renpy.config.idle_gc_full_count:
                 gen = 2
             elif count[1] >= renpy.config.gc_thresholds[1]:
                 gen = 1

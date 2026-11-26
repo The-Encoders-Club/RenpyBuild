@@ -783,11 +783,13 @@ def main():
         renpy.python.make_clean_stores()
         log_clock("Making clean stores")
 
-        # One full collection when the game is loaded, then the thresholds the game runs with.
-        gc.collect(2)
+        # One full collection when the game is loaded (if config.startup_full_gc is true), then the thresholds
+        # the game runs with.
+        if renpy.config.startup_full_gc:
+            gc.collect(2)
 
-        if gc.garbage:
-            del gc.garbage[:]
+            if gc.garbage:
+                del gc.garbage[:]
 
         if renpy.config.manage_gc:
             gc.set_threshold(*renpy.config.gc_thresholds)
