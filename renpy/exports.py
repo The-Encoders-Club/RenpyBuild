@@ -2891,7 +2891,7 @@ def save_persistent():
     Saves the persistent data to disk.
     """
 
-    renpy.persistent.update(True)
+    renpy.persistent.update(True, deferred=True)
 
 
 def is_seen(ever=True):

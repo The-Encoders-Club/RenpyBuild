@@ -22,6 +22,7 @@
 from __future__ import print_function
 
 import zlib
+import gc
 import os
 import copy
 import time
@@ -327,27 +328,69 @@ def merge(other):
 persistent_mtime = None
 
 
+# When the persistent data was last written, and if a write is being held back (see
+# config.persistent_save_interval).
+last_save_time = 0.0
+save_pending = False
+
+
+def save_is_deferred():
+    """
+    True if a write of the persistent data requested by a script (renpy.save_persistent) or found by the
+    periodic check should wait, because the data was written less than config.persistent_save_interval
+    seconds ago. The write is not lost: it is only held back, and done by check_update once the interval
+    has passed. The engine writes at once when the game goes to the background, quits or restarts.
+    """
+
+    interval = renpy.config.persistent_save_interval
+
+    return bool(interval) and (time.time() - last_save_time) < interval
+
+
 def check_update():
     """
     Checks to see if we need to run update. If we do, runs update and
     restarts the interaction.
     """
 
+    global persistent_mtime
+
+    interval = renpy.config.persistent_save_interval
+
+    # A write that was held back and is due now.
+    if save_pending and interval and (time.time() - last_save_time) >= interval:
+        update(True)
+
     for mtime, _data in renpy.loadsave.location.load_persistent():
         if mtime > persistent_mtime:
+            # Our own write: the data is already in memory, so merging the file again (and restarting the
+            # interaction) is a waste of time.
+            if interval and abs(mtime - last_save_time) <= 3.0:
+                persistent_mtime = mtime
+                continue
+
             break
     else:
         return
 
-    update()
+    update(deferred=True)
     renpy.exports.restart_interaction()
 
 
-def update(force_save=False):
+def update(force_save=False, deferred=False):
     """
     Loads the persistent data from persistent files that are newer than
     persistent_mtime, and merges it into the persistent object.
+
+    If `deferred` is true and the data was written very recently, nothing is done now and the write is
+    held back (see save_is_deferred).
     """
+
+    global save_pending
+
+    if deferred and save_is_deferred():
+        save_pending = True
+        return
 
     need_save = find_changes()
     need_save = need_save or force_save
@@ -386,13 +429,28 @@ def save():
     Saves the persistent data to disk.
     """
 
+    global last_save_time, save_pending
+
     if not should_save_persistent:
         return
 
     try:
-        # level 1 is a lot faster than the default 6 and the file is only a bit bigger
-        data = zlib.compress(dumps(renpy.game.persistent), 1)
+        # level 1 is a lot faster than the default 6 and the file is only a bit bigger.
+        # The garbage collector is stopped while the data is serialized: it creates a lot of objects, so a full
+        # collection could start in the middle of it and add a hundred milliseconds or more to the write.
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+
+        try:
+            data = zlib.compress(dumps(renpy.game.persistent), 1)
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
         renpy.loadsave.location.save_persistent(data)
+
+        last_save_time = time.time()
+        save_pending = False
     except:
         if renpy.config.developer:
             raise

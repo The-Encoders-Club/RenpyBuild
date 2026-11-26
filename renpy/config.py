@@ -318,6 +318,12 @@ hide = renpy.exports.hide
 # Should we use cPickle or pickle for load/save?
 use_cpickle = True
 
+# The minimum number of seconds between two writes of the persistent data asked for by scripts
+# (renpy.save_persistent) or found by the periodic check. A write that is asked for sooner is held back and
+# done later, so a game that calls renpy.save_persistent all the time does not stall on every call. The data is
+# always written at once when the game goes to the background, quits or restarts. 0 writes at every request.
+persistent_save_interval = 10.0
+
 # The function to call as the inspector.
 inspector = None
 
