@@ -324,6 +324,12 @@ use_cpickle = True
 # always written at once when the game goes to the background, quits or restarts. 0 writes at every request.
 persistent_save_interval = 10.0
 
+# Should the rollback log find out that a statement changed nothing in the store by comparing the whole dictionary
+# with the copy taken at the start of the statement (done in C, about ten times faster) before looking at each name?
+# A value replaced by an equal copy of itself is not seen as a change this way. This runs for every statement of the
+# game, so it is what makes a script of thousands of names slow.
+rollback_fast_unchanged = True
+
 # The function to call as the inspector.
 inspector = None
 

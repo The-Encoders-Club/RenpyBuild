@@ -102,21 +102,30 @@ class StoreDict(dict):
         # end of the init phase.
         self.ever_been_changed = set()
 
+        # True if get_changes found that nothing had changed since old was taken, so old is still the
+        # contents of the store and begin does not have to copy the store again.
+        self.old_current = False
+
     def reset(self):
         """
         Called to reset this to its initial conditions.
         """
 
         self.old = { }
+        self.old_current = False
         self.ever_been_changed = set()
         self.clear()
 
-    def begin(self):
+    def begin(self, force=False):
         """
         Called to mark the start of a rollback period.
         """
 
+        if self.old_current and not force:
+            return
+
         self.old = dict(self)
+        self.old_current = False
 
     def get_changes(self):
         """
@@ -126,6 +135,26 @@ class StoreDict(dict):
 
         As a side-effect, updates self.ever_been_changed.
         """
+
+        # Nearly every statement changes nothing in the store. Comparing the two dictionaries is done in C and
+        # takes a tenth of what looking at each name does, and the values that are the same object are
+        # not even compared. (See config.rollback_fast_unchanged.)
+        if renpy.config.rollback_fast_unchanged:
+
+            try:
+                unchanged = (len(self) == len(self.old)) and dict.__eq__(self, self.old)
+            except Exception:
+                unchanged = False
+
+            if unchanged:
+                self.old_current = True
+                return { }
+
+        self.old_current = False
+
+        return self.slow_changes()
+
+    def slow_changes(self):
 
         rv = { }
 
@@ -230,6 +259,7 @@ class StoreBackup():
 
         sd.old.clear()
         sd.old.update(self.old[name])
+        sd.old_current = False
 
         sd.ever_been_changed.clear()
         sd.ever_been_changed.update(self.ever_been_changed[name])
@@ -253,6 +283,7 @@ def make_clean_stores():
     for _k, v in store_dicts.iteritems():
 
         v.old.clear()
+        v.old_current = False
         v.ever_been_changed.clear()
 
     clean_store_backup = StoreBackup()
@@ -283,7 +314,7 @@ def reset_store_changes(name):
         name = "store." + name
 
     sd = store_dicts[name]
-    sd.begin()
+    sd.begin(force=True)
 
 # Code that computes reachable objects, which is used to filter
 # the rollback list before rollback or serialization.
