@@ -1981,6 +1981,44 @@ class Interface(object):
         # True if we're doing a one-time profile.
         self.profile_once = False
 
+    # The library SDL2 loaded with ctypes (None until it is needed, False if it cannot be used), and the time of
+    # the next check of the swap interval.
+    vsync_lib = None
+    next_vsync_check = 0.0
+
+    def keep_vsync_off(self):
+        """
+        When the game runs with vsync off (RENPY_GL_VSYNC=0), makes sure the swap interval of the GL context is
+        really 0. On some Windows laptops the graphics driver (or something that hooks it) puts the swap interval
+        back to 1 every few seconds, and then the frame rate is held at the refresh rate of the screen. Checking it
+        twice a second and setting it again is cheap and keeps the frames free.
+        """
+
+        if not renpy.config.keep_vsync_off or self.vsync_lib is False:
+            return
+
+        now = time.time()
+
+        if now < self.next_vsync_check:
+            return
+
+        self.next_vsync_check = now + 0.5
+
+        try:
+            if self.vsync_lib is None:
+                if (not renpy.windows) or (os.environ.get("RENPY_GL_VSYNC", "1") != "0") or (renpy.display.draw.info["renderer"] != "gl"):
+                    self.vsync_lib = False
+                    return
+
+                import ctypes
+                self.vsync_lib = ctypes.CDLL("SDL2.dll")
+
+            if self.vsync_lib.SDL_GL_GetSwapInterval() != 0:
+                self.vsync_lib.SDL_GL_SetSwapInterval(0)
+
+        except Exception:
+            self.vsync_lib = False
+
     def draw_screen(self, root_widget, fullscreen_video, draw):
 
         surftree = renpy.display.render.render_screen(
@@ -1991,6 +2029,7 @@ class Interface(object):
 
         if draw:
             renpy.display.draw.draw_screen(surftree, fullscreen_video)
+            self.keep_vsync_off()
 
         renpy.display.render.mark_sweep()
         renpy.display.focus.take_focuses()

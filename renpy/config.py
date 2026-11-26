@@ -114,6 +114,10 @@ prewarm_budget = 0.5
 prewarm_neighbors = True
 prewarm_neighbors_max = 150
 
+# When the game runs with vsync off (RENPY_GL_VSYNC=0) on Windows, check twice a second that the graphics driver
+# has not put the swap interval back to 1, and set it to 0 again if it has.
+keep_vsync_off = True
+
 # The number of statements we will analyze when doing predictive
 # loading. Please note that this is a total number of statements in a
 # BFS along all paths, rather than the depth along any particular

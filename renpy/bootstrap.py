@@ -203,6 +203,13 @@ def bootstrap(renpy_base):
         sys.stderr.write("Base directory %r does not exist. Giving up.\n" % (basedir,))
         sys.exit(1)
 
+    # Vsync is OFF by default (on every platform), so the game draws without waiting for the screen refresh and its
+    # frame rate is not capped by the screen (or by what the system gives the app on a phone). Frames that take a
+    # little longer than a refresh then do not wait for the next one, so the stalls are shorter. It makes a laptop or
+    # a phone use more power and run hotter. It is only set when nothing defined RENPY_GL_VSYNC.
+    if "RENPY_GL_VSYNC" not in os.environ:
+        os.environ["RENPY_GL_VSYNC"] = "0"
+
     gamedirs = [ name ]
     game_name = name
 
