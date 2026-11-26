@@ -295,8 +295,14 @@ class Movie(renpy.display.core.Displayable):
     def render(self, width, height, st, at):
 
         if (self.image is not None) and (self._play is not None):
-            # Checks if the given movie is loadable or if the user prefers images only
-            if (not renpy.loader.loadable(self._play)) or (renpy.game.preferences.video_image_fallback is True):
+            # Checks if the given movie is loadable or if the user prefers images only. Whether the file can be
+            # loaded is looked up once for each movie: this runs at every frame, and some mods replace
+            # renpy.loader.loadable with a version that asks the file system each time.
+            if getattr(self, "_loadable_for", None) != self._play:
+                self._loadable_for = self._play
+                self._loadable_result = renpy.loader.loadable(self._play)
+
+            if (not self._loadable_result) or (renpy.game.preferences.video_image_fallback is True):
                 surf = renpy.display.render.render(self.image, width, height, st, at)
 
                 w, h = surf.get_size()

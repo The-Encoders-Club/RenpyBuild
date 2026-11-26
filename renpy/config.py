@@ -349,6 +349,11 @@ persistent_save_interval = 10.0
 # game, so it is what makes a script of thousands of names slow.
 rollback_fast_unchanged = True
 
+# Should a Transform given the name of an image file as its child use the same Image object for a few seconds,
+# instead of making a new one every time? (A mod that makes a Transform with a file name for every particle at every
+# frame is much slower otherwise.)
+cache_transform_images = True
+
 # The most threads used to load at once the layers of an im.Composite (a sprite made of several images) that
 # are not in the image cache yet. 0 or 1 loads them one after the other, as before.
 parallel_image_threads = 4

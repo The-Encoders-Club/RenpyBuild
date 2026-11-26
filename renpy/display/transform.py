@@ -560,7 +560,12 @@ class Transform(Container):
 
         self.function = function
 
-        child = renpy.easy.displayable_or_none(child)
+        if (isinstance(child, basestring) and child and ("[" not in child) and (child[0] != '#') and ("." in child)
+                and renpy.config.cache_transform_images):
+            child = renpy.easy.file_image(child)
+        else:
+            child = renpy.easy.displayable_or_none(child)
+
         if child is not None:
             self.add(child)
 

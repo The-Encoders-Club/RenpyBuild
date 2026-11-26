@@ -31,6 +31,35 @@ Color = renpy.color.Color
 color = renpy.color.Color
 
 
+# Images made from a file name by transforms, kept for a few seconds. See file_image.
+file_images = { }
+
+
+def file_image(name):
+    """
+    Returns the Image of the file `name`, the same object for a few seconds, instead of making a new one at every
+    call. Used for the child of a Transform given as a string: there are mods that make a Transform("file.png")
+    for every particle at every frame, and building the Image (and everything that other mods hook to it) each
+    time was a big part of what a frame cost. An image has no state of its own, so sharing it is the same as what
+    `image` statements do, and it is made again from time to time in case a mod changed what Image means.
+    """
+
+    now = time.time()
+    entry = file_images.get(name)
+
+    if (entry is not None) and (now < entry[1]):
+        return entry[0]
+
+    rv = renpy.store.Image(name)
+
+    if len(file_images) > 3000:
+        file_images.clear()
+
+    file_images[name] = (rv, now + 5.0)
+
+    return rv
+
+
 def displayable_or_none(d, scope=None, dynamic=True):
 
     if isinstance(d, renpy.display.core.Displayable):
