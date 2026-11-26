@@ -453,6 +453,19 @@ public class PythonSDLActivity extends SDLActivity implements AssetPackStateUpda
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             applyImmersiveMode();
+            requestHighRefreshRate();
+
+            // The surface may not exist yet when the window gets focus (first start, coming back
+            // from the background), so it is asked again once it has been created.
+            android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!isFinishing()) {
+                        requestHighRefreshRate();
+                    }
+                }
+            }, 1500);
         }
     }
 
@@ -695,6 +708,73 @@ public class PythonSDLActivity extends SDLActivity implements AssetPackStateUpda
                     }
                 }
             }, delays[i]);
+        }
+    }
+
+    /**
+     * Asks the system for the highest refresh rate the screen has. Without a request many
+     * vendors (HyperOS, One UI, ColorOS...) keep non-game apps at 60 Hz even on 90/120 Hz
+     * screens. Three requests, so that whichever the vendor honours works:
+     * the preferred display mode (highest rate at the current resolution), the preferred
+     * refresh rate of the window, and the frame rate of the surface (Android 11+).
+     * It does nothing on a 60 Hz screen and it never lowers the rate.
+     */
+    private void requestHighRefreshRate() {
+        try {
+            android.view.Display display = getWindowManager().getDefaultDisplay();
+            float best = display.getRefreshRate();
+            int bestId = 0;
+
+            if (Build.VERSION.SDK_INT >= 23) {
+                android.view.Display.Mode current = display.getMode();
+                for (android.view.Display.Mode mode : display.getSupportedModes()) {
+                    if (mode.getPhysicalWidth() != current.getPhysicalWidth()
+                            || mode.getPhysicalHeight() != current.getPhysicalHeight()) {
+                        continue;
+                    }
+                    if (mode.getRefreshRate() > best + 0.5f) {
+                        best = mode.getRefreshRate();
+                        bestId = mode.getModeId();
+                    }
+                }
+            }
+
+            WindowManager.LayoutParams params = getWindow().getAttributes();
+            boolean changed = false;
+
+            if (bestId != 0 && Build.VERSION.SDK_INT >= 23 && params.preferredDisplayModeId != bestId) {
+                params.preferredDisplayModeId = bestId;
+                changed = true;
+            }
+
+            if (params.preferredRefreshRate != best) {
+                params.preferredRefreshRate = best;
+                changed = true;
+            }
+
+            if (changed) {
+                getWindow().setAttributes(params);
+            }
+
+            if (Build.VERSION.SDK_INT >= 30 && mFrameLayout != null) {
+                android.view.SurfaceView surfaceView = findSurfaceViewIn(mFrameLayout);
+                if (surfaceView != null) {
+                    android.view.Surface surface = surfaceView.getHolder().getSurface();
+                    if (surface != null && surface.isValid()) {
+                        if (Build.VERSION.SDK_INT >= 31) {
+                            surface.setFrameRate(best, android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                                    android.view.Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS);
+                        } else {
+                            surface.setFrameRate(best, android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
+                        }
+                    }
+                }
+            }
+
+            Log.i("MAS_HZ", "requested " + best + " Hz (mode " + bestId + "), the display runs at "
+                    + display.getRefreshRate() + " Hz");
+        } catch (Exception e) {
+            Log.e("MAS_HZ", "Error requesting the refresh rate: " + e.toString());
         }
     }
 
