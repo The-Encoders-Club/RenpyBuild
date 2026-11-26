@@ -53,27 +53,47 @@ def expand_bounds(bounds, size, amount):
 # This is an entry in the image cache.
 class CacheEntry(object):
 
-    def __init__(self, what, surf):
+    def __init__(self, what, surf, texsurf=None, offset=(0, 0), full_size=None):
 
         # The object that is being cached (which needs to be
         # hashable and comparable).
         self.what = what
 
-        # The pygame surface corresponding to the cached object.
+        # The pygame surface corresponding to the cached object. It is None when only the rectangle of the image
+        # that is not transparent is kept (see config.compact_image_cache); Cache.get builds the whole surface
+        # again if somebody asks for it.
         self.surf = surf
 
-        # The size of this image.
-        w, h = surf.get_size()
-        self.size = w * h
+        # The size of the whole image.
+        if surf is not None:
+            self.full_size = surf.get_size()
+        else:
+            self.full_size = full_size
+
+        # The part of the image that is uploaded to the GPU: a surface with the rectangle of the image that is not
+        # transparent (a copy of it when surf is None, a subsurface of surf otherwise), and where it goes inside
+        # the whole image. None if the image is not optimized. See Cache.make_entry.
+        self.texsurf = texsurf
+
+        if texsurf is not None:
+            tw, th = texsurf.get_size()
+            self.bounds = (offset[0], offset[1], tw, th)
+        else:
+            self.bounds = None
+
+        # The size of this entry, in pixels. When the whole surface is not kept, only the visible rectangle counts.
+        if surf is not None:
+            w, h = self.full_size
+            self.size = w * h
+        else:
+            self.size = tw * th
 
         # The time when this cache entry was last used.
         self.time = 0
 
-        # The part of surf that is uploaded to the GPU (a subsurface with the rectangle of the image that is not
-        # transparent) and where it goes inside surf. They are worked out the first time the image is drawn,
-        # see Cache.get_trimmed.
-        self.texsurf = None
-        self.bounds = None
+        # True if the surface of this entry belongs to another entry (an im.MatrixColor that changes nothing, for
+        # example), so it takes no more memory and is not counted.
+        self.shared = False
 
 # This is the singleton image cache.
 
@@ -120,6 +140,19 @@ class Cache(object):
         # The size of the cache, in pixels.
         self.cache_limit = 0
 
+        # The thread that loads in advance the images that are next to the ones that are used (see
+        # Cache.prewarm_main and config.prewarm_images).
+        self.prewarm_thread = None
+        self.prewarm_wake = threading.Event()
+
+        # The directories of the sprites that were used for the first time and whose other images are going to be
+        # loaded in advance (neighbor_queue), the ones that were already queued, and the list of the image files of
+        # the game by directory. See Cache.prewarm_directory.
+        self.neighbor_queue = [ ]
+        self.neighbor_seen = set()
+        self.neighbor_work = threading.Event()
+        self.image_index = None
+
         # The preload thread.
         self.preload_thread = threading.Thread(target=self.preload_thread_main, name="preloader")
         self.preload_thread.setDaemon(True)
@@ -146,6 +179,9 @@ class Cache(object):
         self.cache_limit = renpy.config.image_cache_size * renpy.config.screen_width * renpy.config.screen_height
 
     def quit(self):  # @ReservedAssignment
+
+        self.prewarm_wake.set()
+
         if not self.preload_thread.isAlive():
             return
 
@@ -184,6 +220,9 @@ class Cache(object):
             self.size_of_current_generation = 0
             self.added.clear()
 
+        if (self.prewarm_thread is None) and (self.time >= 3):
+            self.start_prewarm()
+
         if renpy.config.debug_image_cache:
             renpy.display.ic_log.write("----")
             filename, line = renpy.exports.get_filename_line()
@@ -193,6 +232,160 @@ class Cache(object):
     # to lock things.
     def end_tick(self):
         self.preloads = [ ]
+
+    def touch(self, ce):
+        """
+        Moves the entry into the current generation. This isn't protected by a lock, so in certain circumstances
+        we could have an inaccurate size - but that will be cured at the end of the current generation.
+        """
+
+        if ce.time != self.time:
+            ce.time = self.time
+            self.size_of_current_generation += ce.size
+
+    def make_entry(self, image, predict):
+        """
+        Loads `image` and puts it in the cache. Returns the entry and the whole surface, if it had to be loaded
+        (it is None when only the visible rectangle was needed: the entry does not keep the whole surface when
+        it is mostly transparent, see config.compact_image_cache).
+        """
+
+        trim = renpy.config.optimize_texture_bounds
+        compact = trim and renpy.config.compact_image_cache
+
+        ce = None
+        full = None
+
+        # An image that is the very same one as another (an im.MatrixColor that changes nothing) uses the surface
+        # of that one, and it is not counted again.
+        if compact:
+            alias = image.trimmed_alias()
+
+            if (alias is not None) and alias.cache:
+                self.get_trimmed(alias, predict)
+                owner = self.cache.get(alias, None)
+
+                if (owner is not None) and (owner.texsurf is not None):
+                    ce = CacheEntry(image, owner.surf, owner.texsurf, owner.bounds[:2], owner.full_size)
+                    ce.shared = True
+                    ce.size = 0
+
+        if ce is None:
+
+            def load():
+                if image in self.pin_cache:
+                    return self.pin_cache[image], None
+
+                if compact:
+                    rv = image.load_trimmed()
+
+                    if rv is not None:
+                        return None, rv
+
+                return image.load(), None
+
+            if not predict:
+                with renpy.game.ExceptionInfo("While loading %r:", image):
+                    surf, trimmed = load()
+            else:
+                surf, trimmed = load()
+
+            if trimmed is not None:
+
+                # The image was made from the visible rectangles of others, there is no whole surface.
+                texsurf, offset, size = trimmed
+                ce = CacheEntry(image, None, texsurf, offset, size)
+
+            elif trim:
+
+                w, h = size = surf.get_size()
+                rect = None
+
+                try:
+                    rect = tuple(surf.get_bounding_rect())
+                    rect = expand_bounds(rect, size, renpy.config.expand_texture_bounds)
+                except Exception:
+                    rect = None
+
+                if (rect is None) or (rect[2] <= 0) or (rect[3] <= 0) or (rect == (0, 0, w, h)):
+
+                    # Nothing visible, or nothing to cut: the whole surface is used.
+                    ce = CacheEntry(image, surf, surf, (0, 0), size)
+
+                elif compact and (rect[2] * rect[3] * 4 <= w * h * 3):
+
+                    # Only the visible rectangle is kept; the whole surface goes to whoever asked for it.
+                    ce = CacheEntry(image, None, self.copy_rect(surf, rect), rect[:2], size)
+                    full = surf
+
+                else:
+                    ce = CacheEntry(image, surf, surf.subsurface(rect), rect[:2], size)
+                    ce.size = w * h
+
+            else:
+                ce = CacheEntry(image, surf)
+
+        if isinstance(image, Image) and not ce.shared:
+
+            # A sprite (an image that is mostly transparent, so only a part of it was kept) that is used for the
+            # first time: the other images of its directory are most likely sprites of the same character, so
+            # they are loaded in the background, before they are needed.
+            if ((ce.surf is None) and (ce.texsurf is not None) and (self.prewarm_thread is not False)
+                    and renpy.config.prewarm_neighbors and not getattr(prewarm_state, "active", False)):
+
+                directory = image.filename.rpartition(u"/")[0]
+
+                if directory not in self.neighbor_seen:
+                    self.neighbor_seen.add(directory)
+                    self.neighbor_queue.append(directory)
+                    self.neighbor_work.set()
+
+        with self.lock:
+
+            old = self.cache.get(image, None)
+
+            if old is not None:
+                self.total_cache_size -= old.size
+
+            self.total_cache_size += ce.size
+            self.cache[image] = ce
+
+            # Indicate that this surface had changed.
+            if not ce.shared:
+                if ce.texsurf is not None:
+                    renpy.display.render.mutated_surface(ce.texsurf)
+
+                if ce.surf is not None:
+                    renpy.display.render.mutated_surface(ce.surf)
+
+            if renpy.config.debug_image_cache:
+                if predict:
+                    renpy.display.ic_log.write("Added %r (%.02f%%)", ce.what, 100.0 * self.total_cache_size / self.cache_limit)
+                else:
+                    renpy.display.ic_log.write("Total Miss %r", ce.what)
+
+        return ce, full
+
+    def copy_rect(self, surf, rect):
+        """
+        Returns a new surface with the rectangle `rect` of `surf`. It is not made with surf.copy(), because the
+        surfaces that pygame_sdl2 creates have some extra memory at the end that the code that turns a surface
+        into a texture reads (the border of the last tile) and the ones made by copy do not: it crashed.
+        """
+
+        rv = renpy.display.pgrender.surface((rect[2], rect[3]), True)
+        rv.blit(surf, (0, 0), rect)
+        return rv
+
+    def expand(self, ce):
+        """
+        Builds the whole surface of an entry that only keeps its visible rectangle. The pixels are exactly the
+        ones of the image that was loaded, and the surface is a new one, so whoever has it can do what it likes.
+        """
+
+        rv = renpy.display.pgrender.surface(ce.full_size, True)
+        rv.blit(ce.texsurf, ce.bounds[:2])
+        return rv
 
     # This returns the pygame surface corresponding to the provided
     # image. It also takes care of updating the age of images in the
@@ -210,52 +403,186 @@ class Cache(object):
 
         # First try to grab the image out of the cache without locking it.
         ce = self.cache.get(image, None)
+        full = None
 
         # Otherwise, we load the image ourselves.
         if ce is None:
+            ce, full = self.make_entry(image, predict)
 
-            try:
-                if image in self.pin_cache:
-                    surf = self.pin_cache[image]
-                else:
-                    if not predict:
-                        with renpy.game.ExceptionInfo("While loading %r:", image):
-                            surf = image.load()
-                    else:
-                        surf = image.load()
-
-            except:
-                raise
-
-            with self.lock:
-
-                ce = CacheEntry(image, surf)
-
-                if image not in self.cache:
-                    self.total_cache_size += ce.size
-
-                self.cache[image] = ce
-
-                # Indicate that this surface had changed.
-                renpy.display.render.mutated_surface(ce.surf)
-
-                if renpy.config.debug_image_cache:
-                    if predict:
-                        renpy.display.ic_log.write("Added %r (%.02f%%)", ce.what, 100.0 * self.total_cache_size / self.cache_limit)
-                    else:
-                        renpy.display.ic_log.write("Total Miss %r", ce.what)
-
-        # Move it into the current generation. This isn't protected by
-        # a lock, so in certain circumstances we could have an
-        # inaccurate size - but that will be cured at the end of the
-        # current generation.
-
-        if ce.time != self.time:
-            ce.time = self.time
-            self.size_of_current_generation += ce.size
+        self.touch(ce)
 
         # Done... return the surface.
-        return ce.surf
+        if ce.surf is not None:
+            return ce.surf
+
+        if full is not None:
+            return full
+
+        return self.expand(ce)
+
+    def start_prewarm(self):
+        """
+        Starts the thread that loads in advance the images next to the ones that are used, if the game wants it.
+        """
+
+        if (self.prewarm_thread is not None):
+            return
+
+        if not (renpy.config.prewarm_images and renpy.config.optimize_texture_bounds and renpy.config.compact_image_cache):
+            self.prewarm_thread = False
+            return
+
+        self.prewarm_thread = threading.Thread(target=self.prewarm_main, name="prewarm")
+        self.prewarm_thread.daemon = True
+        self.prewarm_thread.start()
+
+    def prewarm_main(self):
+        """
+        Loads, a few at a time and without hurry, the images that are in the same directory as a sprite that was
+        used for the first time (see prewarm_directory), up to a part of the size of the cache. Only the visible
+        rectangle of each one is kept (see config.compact_image_cache), so it is cheap, and the first time one is
+        shown it is already decoded and prepared to be uploaded to the GPU instead of being loaded in the middle of
+        the game.
+        """
+
+        prewarm_state.active = True
+
+        try:
+
+            # Let the game start first.
+            self.prewarm_wake.wait(1.0)
+
+            while not self.prewarm_wake.is_set() and self.keep_preloading:
+
+                self.neighbor_work.wait(5.0)
+                self.neighbor_work.clear()
+
+                while self.neighbor_queue and not self.prewarm_wake.is_set():
+                    self.prewarm_directory(self.neighbor_queue.pop(0))
+
+        except Exception:
+            pass
+
+    def get_image_index(self):
+        """
+        A map from a directory to the names of the image files that are directly in it, for every file of the game.
+        """
+
+        if self.image_index is None:
+
+            index = { }
+
+            try:
+                for name in renpy.exports.list_files():
+                    if name.lower().endswith((u".png", u".jpg", u".jpeg", u".webp")):
+                        directory, _slash, _base = name.rpartition(u"/")
+                        index.setdefault(directory, [ ]).append(name)
+            except Exception:
+                pass
+
+            for names in index.values():
+                names.sort()
+
+            self.image_index = index
+
+        return self.image_index
+
+    def prewarm_directory(self, directory):
+        """
+        Loads in the background the images that are in `directory` and are not in the cache (see
+        config.prewarm_neighbors), the way prewarm_main does it, up to the budget of the cache.
+        """
+
+        budget = self.cache_limit * renpy.config.prewarm_budget
+
+        for filename in self.get_image_index().get(directory, [ ])[:renpy.config.prewarm_neighbors_max]:
+
+            if self.prewarm_wake.is_set() or not self.keep_preloading:
+                return
+
+            if self.total_cache_size >= budget:
+                return
+
+            im = Image(filename)
+
+            if im in self.cache:
+                continue
+
+            try:
+                self.preload_texture(im)
+            except Exception:
+                pass
+
+            self.prewarm_wake.wait(0.005)
+
+    def load_many(self, images):
+        """
+        Loads into the cache the images of the list `images` that are not in it yet, a few at a time in threads,
+        so a sprite made of several big images does not decode them one after the other while the game waits.
+        Decoding a file does not hold the interpreter lock, so the threads really run at the same time. If a
+        thread fails the image is not loaded here: whoever needs it loads it itself, and the error is raised
+        there, with the usual information.
+        """
+
+        max_threads = renpy.config.parallel_image_threads
+
+        if (max_threads < 2) or getattr(parallel_load_state, "active", False):
+            return
+
+        missing = [ ]
+        seen = set()
+
+        for im in images:
+            if isinstance(im, ImageBase) and im.cache and (im not in seen) and (self.cache.get(im, None) is None):
+                seen.add(im)
+                missing.append(im)
+
+        if len(missing) < 2:
+            return
+
+        todo = list(reversed(missing))
+        todo_lock = threading.Lock()
+
+        def work():
+            parallel_load_state.active = True
+
+            try:
+                while True:
+                    with todo_lock:
+                        if not todo:
+                            return
+
+                        im = todo.pop()
+
+                    try:
+                        self.get_trimmed(im, predict=True)
+                    except Exception:
+                        pass
+
+            finally:
+                parallel_load_state.active = False
+
+        threads = [ ]
+
+        for _i in range(min(max_threads, len(missing)) - 1):
+            t = threading.Thread(target=work)
+            t.daemon = True
+            t.start()
+            threads.append(t)
+
+        work()
+
+        for t in threads:
+            t.join()
+
+    def load_for_prediction(self, image):
+        """
+        Makes sure that `image` is in the cache and marks it as used, like get does, but without returning the
+        surface. The prediction (renpy.display.predict) calls this for every image of what is on the screen, so
+        it must not build the whole surface of the images that only keep their visible rectangle.
+        """
+
+        self.get_trimmed(image)
 
     def get_trimmed(self, image, predict=False):
         """
@@ -266,45 +593,23 @@ class Cache(object):
         done inside Cache.get.)
         """
 
-        surf = self.get(image, predict=predict)
-
-        if not renpy.config.optimize_texture_bounds:
+        if (not renpy.config.optimize_texture_bounds) or (not isinstance(image, ImageBase)) or (not image.cache):
+            surf = self.get(image, predict=predict)
             return surf, (0, 0), surf.get_size()
 
         ce = self.cache.get(image, None)
+        full = None
 
-        # Images that are not cached (image.cache is false) are not optimized.
-        if (ce is None) or (ce.surf is not surf):
-            return surf, (0, 0), surf.get_size()
+        if (ce is None) or (ce.texsurf is None):
+            ce, full = self.make_entry(image, predict)
+
+        self.touch(ce)
 
         if ce.texsurf is None:
+            surf = ce.surf if ce.surf is not None else full
+            return surf, (0, 0), surf.get_size()
 
-            with self.lock:
-
-                if ce.texsurf is None:
-
-                    w, h = size = surf.get_size()
-                    texsurf = surf
-                    bounds = (0, 0, w, h)
-
-                    try:
-                        rect = tuple(surf.get_bounding_rect())
-                        rect = expand_bounds(rect, size, renpy.config.expand_texture_bounds)
-
-                        # Nothing visible, or nothing to cut: draw the whole surface as before.
-                        if rect[2] > 0 and rect[3] > 0 and rect != bounds:
-                            texsurf = surf.subsurface(rect)
-                            renpy.display.render.mutated_surface(texsurf)
-                            bounds = rect
-
-                    except Exception:
-                        texsurf = surf
-                        bounds = (0, 0, w, h)
-
-                    ce.bounds = bounds
-                    ce.texsurf = texsurf
-
-        return ce.texsurf, ce.bounds[:2], surf.get_size()
+        return ce.texsurf, ce.bounds[:2], ce.full_size
 
     # This kills off a given cache entry.
     def kill(self, ce):
@@ -314,10 +619,13 @@ class Cache(object):
             self.size_of_current_generation -= ce.size
 
         # Let the texture cache know we're not needed.
-        renpy.display.draw.mutated_surface(ce.surf)
+        if not ce.shared:
 
-        if (ce.texsurf is not None) and (ce.texsurf is not ce.surf):
-            renpy.display.draw.mutated_surface(ce.texsurf)
+            if ce.surf is not None:
+                renpy.display.draw.mutated_surface(ce.surf)
+
+            if (ce.texsurf is not None) and (ce.texsurf is not ce.surf):
+                renpy.display.draw.mutated_surface(ce.texsurf)
 
         self.total_cache_size -= ce.size
         del self.cache[ce.what]
@@ -543,6 +851,24 @@ class ImageBase(renpy.display.core.Displayable):
 
         raise Exception("load method not implemented.")
 
+    def trimmed_alias(self):
+        """
+        If this image is exactly the same as another one (so it can use its surface), returns that one. Used by
+        the cache when it only keeps the visible rectangle of the images.
+        """
+
+        return None
+
+    def load_trimmed(self):
+        """
+        Loads this image working only with the visible rectangle of the images it is made of. Returns
+        (surface, (x, y), (width, height)) with the surface of the rectangle, where it goes and the size of the
+        whole image, or None if the image has to be loaded with load. Used by the cache when it only keeps the
+        visible rectangle of the images.
+        """
+
+        return None
+
     def render(self, w, h, st, at):
 
         im, offset, size = cache.get_trimmed(self)
@@ -647,6 +973,14 @@ class ZipFileImage(ImageBase):
         return [ ]
 
 
+# Set in the threads that load the layers of a Composite, so that the layers of a layer are not loaded
+# with threads of their own.
+parallel_load_state = threading.local()
+
+# Set in the thread that loads the images in advance, so what it does is not counted as use of the images.
+prewarm_state = threading.local()
+
+
 class Composite(ImageBase):
     """
     :doc: im_im
@@ -693,7 +1027,68 @@ class Composite(ImageBase):
 
         return rv
 
+    def load_layers_in_parallel(self):
+        """
+        Loads into the cache the layers of this image that are not in it yet, a few at a time in threads, see
+        Cache.load_many.
+        """
+
+        cache.load_many(self.images)
+
+    def load_trimmed(self):
+
+        self.load_layers_in_parallel()
+
+        if self.size:
+            size = self.size
+        else:
+            size = cache.get_trimmed(self.images[0])[2]
+
+        width, height = size
+
+        # The visible rectangle of each layer, where it goes in the composite, and the rectangle that holds all
+        # of them. The result is only that rectangle, the rest is transparent.
+        parts = [ ]
+        x0 = y0 = x1 = y1 = None
+
+        for pos, im in zip(self.positions, self.images):
+            texsurf, offset, _size = cache.get_trimmed(im)
+            tw, th = texsurf.get_size()
+
+            px = pos[0] + offset[0]
+            py = pos[1] + offset[1]
+
+            ax = max(0, px)
+            ay = max(0, py)
+            bx = min(width, px + tw)
+            by = min(height, py + th)
+
+            if (bx <= ax) or (by <= ay):
+                continue
+
+            parts.append((texsurf, px, py))
+
+            if x0 is None:
+                x0, y0, x1, y1 = ax, ay, bx, by
+            else:
+                x0 = min(x0, ax)
+                y0 = min(y0, ay)
+                x1 = max(x1, bx)
+                y1 = max(y1, by)
+
+        if not parts:
+            return None
+
+        rv = renpy.display.pgrender.surface((x1 - x0, y1 - y0), True)
+
+        for texsurf, px, py in parts:
+            rv.blit(texsurf, (px - x0, py - y0))
+
+        return rv, (x0, y0), size
+
     def load(self):
+
+        self.load_layers_in_parallel()
 
         if self.size:
             size = self.size
@@ -703,7 +1098,15 @@ class Composite(ImageBase):
         rv = renpy.display.pgrender.surface(size, True)
 
         for pos, im in zip(self.positions, self.images):
-            rv.blit(cache.get(im), pos)
+            surf = cache.get(im)
+
+            # The layers of a sprite are as big as the whole sprite, but only a small part of each one (an
+            # eye, a mouth) is not transparent. Blending the transparent pixels changes nothing and is most of
+            # the work, so only the rectangle that has something in it is drawn: the result is the same.
+            rect = surf.get_bounding_rect()
+
+            if rect[2] > 0 and rect[3] > 0:
+                rv.blit(surf, (pos[0] + rect[0], pos[1] + rect[1]), rect)
 
         return rv
 
@@ -1104,6 +1507,13 @@ class Recolor(ImageBase):
         return self.image.predict_files()
 
 
+# The 4x5 color matrix that changes nothing (the elements past the 20th are ignored by MatrixColor).
+IDENTITY_MATRIX = (1, 0, 0, 0, 0,
+                   0, 1, 0, 0, 0,
+                   0, 0, 1, 0, 0,
+                   0, 0, 0, 1, 0)
+
+
 class MatrixColor(ImageBase):
     """
     :doc: im_matrixcolor
@@ -1152,9 +1562,40 @@ class MatrixColor(ImageBase):
     def get_hash(self):
         return self.image.get_hash()
 
+    def trimmed_alias(self):
+        if tuple(self.matrix[:20]) == IDENTITY_MATRIX:
+            return self.image
+
+        return None
+
+    def load_trimmed(self):
+
+        m = self.matrix
+
+        # The transparent pixels around the visible rectangle stay transparent only if the alpha of the result
+        # does not depend on the colors or add anything.
+        if (m[15] != 0) or (m[16] != 0) or (m[17] != 0) or (m[19] != 0):
+            return None
+
+        texsurf, offset, size = cache.get_trimmed(self.image)
+
+        # A surface that is part of a bigger one can not go through the matrix code.
+        if texsurf.get_parent() is not None:
+            return None
+
+        rv = renpy.display.pgrender.surface(texsurf.get_size(), True)
+        renpy.display.module.colormatrix(texsurf, rv, m)
+
+        return rv, offset, size
+
     def load(self):
 
         surf = cache.get(self.image)
+
+        # A matrix that leaves every color as it is (for example the day tint of MAS) gives the same pixels,
+        # so the image is used as it is instead of copying it and running the matrix over every pixel.
+        if tuple(self.matrix[:20]) == IDENTITY_MATRIX:
+            return surf
 
         rv = renpy.display.pgrender.surface(surf.get_size(), True)
 

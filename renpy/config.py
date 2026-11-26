@@ -91,9 +91,28 @@ profile = False
 # The directory save files will be saved to.
 savedir = None
 
-# The number of screens worth of images that are allowed to
-# live in the image cache at once.
+# The size of the image cache, in screens (the number of pixels of this many screens). Ren'Py 7 gives it 300
+# megabytes; with 16 screens (60 MB) a sprite of MAS, made of a lot of layers as big as the screen, does not fit,
+# so its layers are loaded over and over every time the pose changes.
 image_cache_size = 16
+
+# Should the image cache keep (and count) only the rectangle of each image that is not transparent, like Ren'Py 8
+# does? A sprite layer of MAS is as big as the screen but only 17% of it is visible, so a pose takes six times less
+# memory and many more poses fit in the cache, instead of being decoded again every time the pose changes. The
+# whole image is rebuilt (exactly the same) in the rare cases that an operation needs it. Needs
+# optimize_texture_bounds.
+compact_image_cache = True
+
+# Should the other images of the directory of a sprite be loaded in the background when it is used for the first
+# time (see prewarm_neighbors)? It needs compact_image_cache. The images take at most this part of the image cache.
+prewarm_images = True
+prewarm_budget = 0.5
+
+# When a sprite (an image that is mostly transparent) is used for the first time, load in the background the other
+# images that are in the same directory (the other expressions, arms and clothes of the character), at most this
+# many per directory, so they are already loaded when they are shown. Needs prewarm_images.
+prewarm_neighbors = True
+prewarm_neighbors_max = 150
 
 # The number of statements we will analyze when doing predictive
 # loading. Please note that this is a total number of statements in a
@@ -329,6 +348,10 @@ persistent_save_interval = 10.0
 # A value replaced by an equal copy of itself is not seen as a change this way. This runs for every statement of the
 # game, so it is what makes a script of thousands of names slow.
 rollback_fast_unchanged = True
+
+# The most threads used to load at once the layers of an im.Composite (a sprite made of several images) that
+# are not in the image cache yet. 0 or 1 loads them one after the other, as before.
+parallel_image_threads = 4
 
 # The function to call as the inspector.
 inspector = None

@@ -25,7 +25,7 @@ import renpy.display
 
 # Called to indicate an image should be loaded or preloaded. This is
 # a function that takes an image manipulator, set by reset and predict,
-# and winds up bound to either im.cache.get or im.cache.preload_image
+# and winds up bound to either im.cache.load_for_prediction or im.cache.preload_image
 image = None
 
 # The set of displayables we've predicted since reset was last called.
@@ -49,7 +49,31 @@ def displayable(d):
 
     if d not in predicted:
         predicted.add(d)
-        d.visit_all(lambda i : i.predict_one())
+
+        global image
+
+        if (image == renpy.display.im.cache.load_for_prediction) and renpy.config.parallel_image_threads > 1:
+
+            # The images are going to be needed right now (this is what loads the images of a scene before it is
+            # shown). Instead of loading them one after the other, first find out which ones there are, load the
+            # ones that are not in the cache at the same time in several threads, and then do what is done for
+            # each of them as always.
+            found = [ ]
+            load = image
+            image = found.append
+
+            try:
+                d.visit_all(lambda i : i.predict_one())
+            finally:
+                image = load
+
+            renpy.display.im.cache.load_many(found)
+
+            for i in found:
+                image(i)
+
+        else:
+            d.visit_all(lambda i : i.predict_one())
 
 
 def screen(_screen_name, *args, **kwargs):
@@ -63,7 +87,7 @@ def screen(_screen_name, *args, **kwargs):
 
 def reset():
     global image
-    image = renpy.display.im.cache.get
+    image = renpy.display.im.cache.load_for_prediction
     predicted.clear()
     del screens[:]
 
