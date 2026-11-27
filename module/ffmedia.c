@@ -293,7 +293,8 @@ static void deallocate(MediaState *ms) {
 		}
 	}
 
-	if (ms->ctx->pb) {
+	/* There is no context if the decode thread was never created. */
+	if (ms->ctx && ms->ctx->pb) {
 		av_freep(&ms->ctx->pb->buffer);
 		av_freep(&ms->ctx->pb);
 	}
@@ -1145,6 +1146,13 @@ void media_start(MediaState *ms) {
 	if (t) {
 		ms->started = 1;
 		SDL_DetachThread(t);
+	} else {
+		/* Without the thread nothing would ever mark the stream as ready, and those that wait for it
+		 * (media_read_video and media_wait_ready) would wait forever. It is left as a stream that
+		 * has ended. */
+		ms->ready = 1;
+		ms->audio_finished = 1;
+		ms->video_finished = 1;
 	}
 }
 
