@@ -54,29 +54,12 @@ SDL_Surface *media_read_video(struct MediaState *ms);
 double media_duration(struct MediaState *ms);
 void media_wait_ready(struct MediaState *ms);
 
-/* The current Python. */
-PyInterpreterState* interp;
-PyThreadState* thread = NULL;
-
-static void incref(PyObject *ref) {
-    PyThreadState *oldstate;
-
-    PyEval_AcquireLock();
-    oldstate = PyThreadState_Swap(thread);
-    Py_INCREF(ref);
-    PyThreadState_Swap(oldstate);
-    PyEval_ReleaseLock();
-}
-
-static void decref(PyObject *ref) {
-    PyThreadState *oldstate;
-
-    PyEval_AcquireLock();
-    oldstate = PyThreadState_Swap(thread);
-    Py_DECREF(ref);
-    PyThreadState_Swap(oldstate);
-    PyEval_ReleaseLock();
-}
+/*
+ * The audio callback must never call Python, and no thread may wait for the GIL while it holds the audio lock or
+ * the name mutex. On Android, SDL takes the audio lock from the main thread while that thread holds the GIL (when
+ * the app leaves the screen, and when it restarts an audio stream that it believes is stuck). A thread that holds
+ * one of these locks and waits for the GIL deadlocks with it: the whole game freezes.
+ */
 
 /* A mutex that protects the shared data structures. */
 SDL_mutex *name_mutex;
@@ -204,8 +187,10 @@ struct Channel {
 
 };
 
+/* A stream that ended in the audio callback, waiting for RPS_periodic to close it and release its name. */
 struct Dying {
     struct MediaState *stream;
+    PyObject *name;
     struct Dying *next;
 };
 
@@ -297,8 +282,16 @@ static void start_sample(struct Channel* c, int reset_fade) {
     }
 }
 
-static void free_sample(struct MediaState *ss) {
-    media_close(ss);
+/*
+ * Closes a stream that no channel uses anymore and releases its name. Either may be NULL. The caller must hold the
+ * GIL, and neither the audio lock nor the name mutex.
+ */
+static void release_sample(struct MediaState *ss, PyObject *name) {
+    if (ss) {
+        media_close(ss);
+    }
+
+    Py_XDECREF(name);
 }
 
 #define MAX_SHORT (32767)
@@ -495,7 +488,8 @@ static void callback(void *userdata, Uint8 *stream, int length) {
 
                 LOCK_NAME();
 
-                decref(c->playing_name);
+                /* This is the audio thread, holding the audio lock: it can not call Python. */
+                d->name = c->playing_name;
 
                 c->playing = c->queued;
                 c->playing_name = c->queued_name;
@@ -579,30 +573,38 @@ void RPS_play(int channel, SDL_RWops *rw, const char *ext, PyObject *name, int f
     BEGIN();
 
     struct Channel *c;
+    struct MediaState *old_playing = NULL;
+    struct MediaState *old_queued = NULL;
+    PyObject *old_playing_name = NULL;
+    PyObject *old_queued_name = NULL;
 
     if (check_channel(channel)) {
         return;
     }
 
     c = &channels[channel];
+
+    /* The reference of the channel, taken while the GIL is held. */
+    Py_INCREF(name);
+
     ENTER();
 
     LOCK_NAME();
 
-    /* Free playing and queued samples. */
+    /* Take the playing and queued samples out of the channel. They are freed below, after unlocking. */
     if (c->playing) {
-        free_sample(c->playing);
+        old_playing = c->playing;
+        old_playing_name = c->playing_name;
         c->playing = NULL;
-        decref(c->playing_name);
         c->playing_name = NULL;
         c->playing_tight = 0;
         c->playing_start_ms = 0;
     }
 
     if (c->queued) {
-        free_sample(c->queued);
+        old_queued = c->queued;
+        old_queued_name = c->queued_name;
         c->queued = NULL;
-        decref(c->queued_name);
         c->queued_name = NULL;
         c->queued_tight = 0;
         c->queued_start_ms = 0;
@@ -615,11 +617,13 @@ void RPS_play(int channel, SDL_RWops *rw, const char *ext, PyObject *name, int f
     if (! c->playing) {
     	UNLOCK_NAME();
     	EXIT();
+        release_sample(old_playing, old_playing_name);
+        release_sample(old_queued, old_queued_name);
+        Py_DECREF(name);
         error(SOUND_ERROR);
         return;
     }
 
-    incref(name);
     c->playing_name = name;
 
     c->playing_fadein = fadein;
@@ -635,6 +639,10 @@ void RPS_play(int channel, SDL_RWops *rw, const char *ext, PyObject *name, int f
     UNLOCK_NAME();
 
     EXIT();
+
+    release_sample(old_playing, old_playing_name);
+    release_sample(old_queued, old_queued_name);
+
     error(SUCCESS);
 }
 
@@ -643,6 +651,8 @@ void RPS_queue(int channel, SDL_RWops *rw, const char *ext, PyObject *name, int 
     BEGIN();
 
     struct Channel *c;
+    struct MediaState *old_queued = NULL;
+    PyObject *old_queued_name = NULL;
 
     if (check_channel(channel)) {
         return;
@@ -650,21 +660,25 @@ void RPS_queue(int channel, SDL_RWops *rw, const char *ext, PyObject *name, int 
 
     c = &channels[channel];
 
+    /* The reference of the channel, taken while the GIL is held. */
+    Py_INCREF(name);
+
     ENTER();
 
     /* If we're not playing, then we should play instead of queue. */
     if (!c->playing) {
         EXIT();
+        Py_DECREF(name);
         RPS_play(channel, rw, ext, name, fadein, tight, 0, start, end);
         return;
     }
 
-    /* Free queued sample. */
+    /* Take the queued sample out of the channel. It is freed below, after unlocking. */
 
     if (c->queued) {
-        free_sample(c->queued);
+        old_queued = c->queued;
+        old_queued_name = c->queued_name;
         c->queued = NULL;
-        decref(c->queued_name);
         c->queued_name = NULL;
         c->queued_tight = 0;
     }
@@ -674,11 +688,12 @@ void RPS_queue(int channel, SDL_RWops *rw, const char *ext, PyObject *name, int 
 
     if (! c->queued) {
         EXIT();
+        release_sample(old_queued, old_queued_name);
+        Py_DECREF(name);
         error(SOUND_ERROR);
         return;
     }
 
-    incref(name);
     c->queued_name = name;
     c->queued_fadein = fadein;
     c->queued_tight = tight;
@@ -687,6 +702,9 @@ void RPS_queue(int channel, SDL_RWops *rw, const char *ext, PyObject *name, int 
 
 
     EXIT();
+
+    release_sample(old_queued, old_queued_name);
+
     error(SUCCESS);
 }
 
@@ -699,6 +717,10 @@ void RPS_stop(int channel) {
     BEGIN();
 
     struct Channel *c;
+    struct MediaState *old_playing = NULL;
+    struct MediaState *old_queued = NULL;
+    PyObject *old_playing_name = NULL;
+    PyObject *old_queued_name = NULL;
 
     if (check_channel(channel)) {
         return;
@@ -713,19 +735,19 @@ void RPS_stop(int channel) {
         post_event(c);
     }
 
-    /* Free playing and queued samples. */
+    /* Take the playing and queued samples out of the channel. They are freed below, after unlocking. */
     if (c->playing) {
-        free_sample(c->playing);
+        old_playing = c->playing;
+        old_playing_name = c->playing_name;
         c->playing = NULL;
-        decref(c->playing_name);
         c->playing_name = NULL;
         c->playing_start_ms = 0;
     }
 
     if (c->queued) {
-        free_sample(c->queued);
+        old_queued = c->queued;
+        old_queued_name = c->queued_name;
         c->queued = NULL;
-        decref(c->queued_name);
         c->queued_name = NULL;
         c->queued_start_ms = 0;
     }
@@ -734,6 +756,9 @@ void RPS_stop(int channel) {
 
     UNLOCK_NAME();
     EXIT();
+
+    release_sample(old_playing, old_playing_name);
+    release_sample(old_queued, old_queued_name);
 
     error(SUCCESS);
 }
@@ -750,6 +775,8 @@ void RPS_dequeue(int channel, int even_tight) {
     BEGIN();
 
     struct Channel *c;
+    struct MediaState *old_queued = NULL;
+    PyObject *old_queued_name = NULL;
 
     if (check_channel(channel)) {
         return;
@@ -760,9 +787,9 @@ void RPS_dequeue(int channel, int even_tight) {
     ENTER();
 
     if (c->queued && (! c->playing_tight || even_tight)) {
-        free_sample(c->queued);
+        old_queued = c->queued;
+        old_queued_name = c->queued_name;
         c->queued = NULL;
-        decref(c->queued_name);
         c->queued_name = NULL;
     } else {
         c->queued_tight = 0;
@@ -771,6 +798,9 @@ void RPS_dequeue(int channel, int even_tight) {
     c->queued_start_ms = 0;
 
     EXIT();
+
+    release_sample(old_queued, old_queued_name);
+
     error(SUCCESS);
 }
 
@@ -803,7 +833,6 @@ int RPS_queue_depth(int channel) {
 }
 
 PyObject *RPS_playing_name(int channel) {
-	BEGIN();
 	PyObject *rv;
 
     struct Channel *c;
@@ -816,9 +845,8 @@ PyObject *RPS_playing_name(int channel) {
 
     c = &channels[channel];
 
-    ALTENTER();
+    /* The GIL stays held: nothing that holds the name mutex ever waits for it. */
     LOCK_NAME();
-    ALTEXIT();
 
     if (c->playing_name) {
         rv = c->playing_name;
@@ -828,9 +856,7 @@ PyObject *RPS_playing_name(int channel) {
 
     Py_INCREF(rv);
 
-    ALTENTER();
     UNLOCK_NAME();
-    ALTEXIT();
 
     error(SUCCESS);
 
@@ -1206,19 +1232,9 @@ void RPS_init(int freq, int stereo, int samples, int status) {
 
     name_mutex = SDL_CreateMutex();
 
+    /* The threads that decode the streams read the files through Python, so they need the GIL to exist. */
     PyEval_InitThreads();
     import_pygame_sdl2();
-
-    if (!thread) {
-        thread = PyThreadState_Get();
-        interp = thread->interp;
-        thread = PyThreadState_New(interp);
-    }
-
-    if (!thread) {
-        error(SDL_ERROR);
-        return;
-    }
 
     if (SDL_Init(SDL_INIT_AUDIO)) {
         error(SDL_ERROR);
@@ -1275,20 +1291,25 @@ void RPS_quit() {
 void RPS_periodic() {
     BEGIN();
 
+    struct Dying *d;
+    struct Dying *next;
+
     if (!dying) {
         return;
     }
 
+    /* Only the list is taken with the audio lock held. */
     ENTER();
-
-    while (dying) {
-        struct Dying *d = dying;
-        media_close(d->stream);
-        dying = d->next;
-        free(d);
-    }
-
+    d = dying;
+    dying = NULL;
     EXIT();
+
+    while (d) {
+        next = d->next;
+        release_sample(d->stream, d->name);
+        free(d);
+        d = next;
+    }
 }
 
 void RPS_advance_time(void) {
